@@ -405,8 +405,12 @@ sjh_find_live_transcript() {  # sjh_find_live_transcript <cwd> [sid]
   [ -n "$sid" ] || return 0
   # The basename IS the session id — publish-now.sh reads it back off the path — so the export goes
   # into a directory of its own rather than carrying a disambiguating prefix in its name.
-  dir="${TMPDIR:-/tmp}/scrubjay-opencode"
+  # Per-user and mode 700 — same reasoning as hooks/opencode/publish.sh: exports are full
+  # transcripts and must not land in a world-shared dir.
+  dir="${TMPDIR:-/tmp}/scrubjay-opencode.$(id -u)"
   mkdir -p "$dir" || return 0
+  chmod 700 "$dir" 2>/dev/null
+  [ -O "$dir" ] || return 0
   out="$dir/$sid.json"
   opencode export "$sid" > "$out" 2>/dev/null || return 0
   [ -s "$out" ] && jq empty "$out" 2>/dev/null && printf '%s' "$out"

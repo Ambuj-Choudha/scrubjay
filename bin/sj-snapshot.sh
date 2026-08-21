@@ -47,10 +47,6 @@ sjs_prune_list() {  # sjs_prune_list <keep>   (names on stdin)
   grep -E '(^|[@/])scrubjay-[0-9]' | sort -r | awk -v k="$keep" 'NR>k'
 }
 
-# The commands each filesystem uses (pure strings, so --dry-run can echo them verbatim).
-sjs_zfs_snap_cmd()   { printf 'zfs snapshot %s@%s' "$1" "$2"; }              # <dataset> <name>
-sjs_btrfs_snap_cmd() { printf 'btrfs subvolume snapshot -r %s %s/%s' "$1" "$2" "$3"; }  # <src> <snapdir> <name>
-
 # systemd units for scheduled snapshots (generated, not hand-installed).
 sjs_service_text() {  # sjs_service_text <self> <path> <keep>
   cat <<UNIT
@@ -101,7 +97,9 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ACTION" ] || die "nothing to do — pass --now, --schedule, --list or --restore (see --help)."
 
-run() { if [ "$DRY" = 1 ]; then printf '  + %s\n' "$*" >&2; else eval "$*"; fi; }
+# Runs its arguments as a plain argv — no shell re-parse, so a path with spaces or shell
+# metacharacters stays a single argument and cannot inject commands into a root shell.
+run() { if [ "$DRY" = 1 ]; then printf '  + %s\n' "$*" >&2; else "$@"; fi; }
 
 FS="$(sjs_detect_fs "$PATH_STORAGE")"
 if [ "$FS" = none ]; then
@@ -119,19 +117,19 @@ case "$ACTION" in
   now)
     name="$(sjs_snapname)"
     if [ "$FS" = zfs ]; then
-      run "$(sjs_zfs_snap_cmd "$DATASET" "$name")"
+      run zfs snapshot "$DATASET@$name"
     else
-      run "mkdir -p $SNAPDIR"
-      run "$(sjs_btrfs_snap_cmd "$PATH_STORAGE" "$SNAPDIR" "$name")"
+      run mkdir -p "$SNAPDIR"
+      run btrfs subvolume snapshot -r "$PATH_STORAGE" "$SNAPDIR/$name"
     fi
     ok "snapshot $name ($FS)"
     # prune to --keep
     if [ "$FS" = zfs ]; then
       to_del="$(zfs list -H -t snapshot -o name 2>/dev/null | grep -F "$DATASET@" | sjs_prune_list "$KEEP")"
-      for s in $to_del; do run "zfs destroy $s"; done
+      for s in $to_del; do run zfs destroy "$s"; done
     else
       to_del="$(ls -1 "$SNAPDIR" 2>/dev/null | sjs_prune_list "$KEEP")"
-      for s in $to_del; do run "btrfs subvolume delete $SNAPDIR/$s"; done
+      for s in $to_del; do run btrfs subvolume delete "$SNAPDIR/$s"; done
     fi
     [ -n "${to_del:-}" ] && ok "pruned to newest $KEEP" || true
     ;;
@@ -139,10 +137,15 @@ case "$ACTION" in
     have systemctl || die "no systemctl — install a cron job calling '$SELF --now' instead."
     svc=/etc/systemd/system/scrubjay-snapshot.service
     tmr=/etc/systemd/system/scrubjay-snapshot.timer
-    run "printf '%s' \"\$(sjs_service_text '$SELF' '$PATH_STORAGE' '$KEEP')\" > $svc"
-    run "printf '%s' \"\$(sjs_timer_text '$ONCAL')\" > $tmr"
-    run "systemctl daemon-reload"
-    run "systemctl enable --now scrubjay-snapshot.timer"
+    if [ "$DRY" = 1 ]; then
+      printf '  + write %s\n' "$svc" >&2
+      printf '  + write %s\n' "$tmr" >&2
+    else
+      sjs_service_text "$SELF" "$PATH_STORAGE" "$KEEP" > "$svc"
+      sjs_timer_text "$ONCAL" > "$tmr"
+    fi
+    run systemctl daemon-reload
+    run systemctl enable --now scrubjay-snapshot.timer
     ok "scheduled: $ONCAL, keep $KEEP → $tmr"
     ;;
   list)
