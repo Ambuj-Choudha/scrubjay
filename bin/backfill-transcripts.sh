@@ -17,6 +17,7 @@ PROJDIR="$CLAUDE_DIR/projects"
 [ "${1:-}" = "--host" ] && { CLAUDE_HOST="${2:?}"; export CLAUDE_HOST; shift 2; }
 HOST="$(sj_host)"
 backend="${SCRUBJAY_TRANSCRIPT_BACKEND:-git}"
+rc=0                                            # a partial backfill must not exit 0
 
 # Top-level session transcripts only (projects/<slug>/<session>.jsonl) — same set the
 # hook ships; excludes nested subagent transcripts.
@@ -27,28 +28,51 @@ echo "found ${#files[@]} transcripts under $PROJDIR  (host=$HOST, backend=$backe
 if [ "$backend" = "git" ]; then
   chats="$(sj_chats)"
   [ -n "$chats" ] && [ -d "$chats/.git" ] || { echo "no chats repo at '$chats'" >&2; exit 1; }
+  copy_failed=0
   for f in "${files[@]}"; do
     slug="$(basename "$(dirname "$f")")"; sid="$(basename "$f" .jsonl)"
     dst="$chats/$HOST/$slug/$sid.jsonl"
-    mkdir -p "$(dirname "$dst")"; cp -f "$f" "$dst"
+    # A copy that didn't happen stages nothing, so the commit below would have reported "already
+    # up to date" for a run that archived none of the back catalogue.
+    if ! { mkdir -p "$(dirname "$dst")" && cp -f "$f" "$dst"; }; then
+      copy_failed=$((copy_failed+1)); echo "backfill: could not stage $slug/$sid.jsonl" >&2
+    fi
   done
   cd "$chats" || { echo "backfill: cannot cd into '$chats'" >&2; exit 1; }
-  git add -A
+  git add -A || { echo "backfill: could not stage the copies in '$chats'" >&2; exit 1; }
   if git diff --cached --quiet; then
     echo "relay already up to date — nothing to push"
   else
     added="$(git diff --cached --numstat | wc -l)"
-    git commit -q -m "backfill: $added transcripts from $HOST"
+    git commit -q -m "backfill: $added transcripts from $HOST" \
+      || { echo "backfill: the commit of $added transcripts failed" >&2; exit 1; }
     if sj_timeout 180 git push -q; then echo "pushed $added transcripts to scrubjay-chats"
-    else echo "committed; push failed (goes out on next push)"; fi
+    else
+      # Committed locally is not archived: the relay is what other machines read. Warn on stderr
+      # AND keep it in the exit status so a scripted caller doesn't treat this as done.
+      echo "backfill: committed $added transcripts but the push FAILED — they are not on the relay yet; retry with: git -C '$chats' push" >&2
+      copy_failed=$((copy_failed+1))
+    fi
   fi
+  [ "$copy_failed" -eq 0 ] || rc=1
 else
-  # transport-agnostic fallback (e.g. rsync-wg): ship each via the configured backend
+  # transport-agnostic fallback (e.g. rsync-wg): ship each via the configured backend. One bad
+  # transcript must not abort the catalogue, but a run that shipped nothing used to print the same
+  # "shipped N transcripts" line as one that shipped everything.
+  shipped=0; ship_failed=0
   for f in "${files[@]}"; do
     slug="$(basename "$(dirname "$f")")"; sid="$(basename "$f" .jsonl)"
-    "$APP/bin/ship-transcript.sh" "$f" "$slug" "$sid" "$HOST" || true
+    if "$APP/bin/ship-transcript.sh" "$f" "$slug" "$sid" "$HOST"; then
+      shipped=$((shipped+1))
+    else
+      ship_failed=$((ship_failed+1)); echo "backfill: $slug/$sid did not ship" >&2
+    fi
   done
-  echo "shipped ${#files[@]} transcripts via $backend"
+  echo "shipped $shipped/${#files[@]} transcripts via $backend"
+  if [ "$ship_failed" -gt 0 ]; then
+    echo "backfill: $ship_failed transcript(s) FAILED to ship — see above; re-run once the backend is reachable" >&2
+    rc=1
+  fi
 fi
 
 # Index pass. Shipping alone leaves the back catalogue archived but invisible: /sjbrowse, /sjtable
@@ -64,7 +88,11 @@ fi
 # the age window explicitly and leave --quiet-mins doing its job. --max is needed because the cap
 # only lifts on the --all path.
 #
-# NOSHIP: everything above is already shipped. A failure here warns; the backfill still succeeded.
+# NOSHIP: everything above is already shipped. A failure here leaves the back catalogue archived
+# but unfindable, so it warns AND lands in the exit status — the transcripts that did ship stay
+# shipped either way.
 SCRUBJAY_HARNESS=claude SCRUBJAY_NOSHIP=1 \
   "$APP/bin/sj-reconcile.sh" --within-days 36500 --quiet-mins 30 --max 100000 \
-  || echo "backfill: catalogue index failed — run bin/sj-reconcile.sh --all by hand" >&2
+  || { echo "backfill: catalogue index failed — run bin/sj-reconcile.sh --all by hand" >&2; rc=1; }
+
+exit "$rc"

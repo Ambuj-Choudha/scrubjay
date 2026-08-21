@@ -411,7 +411,11 @@ sj_normalize_plans() {  # sj_normalize_plans <plans_dir>
 # key on the receiver — surfaces at the next SessionStart instead of going unnoticed for days.
 # Written by bin/ship-transcript.sh after the primary transcript push; read by hooks/sync-session.sh.
 sj_ship_status_file() { printf '%s' "$HOME/.config/scrubjay/last-ship"; }
-sj_record_ship() {  # sj_record_ship <ok|fail> <session_id> <backend> [rc]
+#   result=ok       the transcript and every one of the session's other records reached the archive
+#   result=partial  the transcript landed but some records (plans, subagents, the readable
+#                   rendering) did not — an archive with holes in it, and worth saying out loud
+#   result=fail     the transcript itself did not land; rc carries the transport's status
+sj_record_ship() {  # sj_record_ship <ok|partial|fail> <session_id> <backend> [rc]
   local result="$1" sid="$2" backend="$3" rc="${4:-0}" f
   f="$(sj_ship_status_file)"; mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
   printf 'result=%s ts=%s host=%s backend=%s sid=%s rc=%s\n' \
@@ -555,14 +559,20 @@ sj_log_row() {  # sj_log_row <log> <sid> <cwd> <transcript> <harness> <host> <ts
 # it is ~30 lines of hard-won wedge-proofing (see below) and must not exist twice.
 #
 # .gitignore blocks secrets/transcripts (*.credentials*, *.jsonl, .claude.json), so `git add -A`
-# can never stage those. Best-effort and silent by contract — it must never fail its caller.
+# can never stage those. Best-effort and silent by contract — it must never fail its caller, so the
+# outcome leaves by breadcrumb instead (sj_record_data_push): a machine whose catalogue rows stop
+# reaching the data repo is invisible to every reader on every other machine, and used to report
+# nothing at all. The subshell's exit code is the channel:
+#   0  pushed, or genuinely nothing to push
+#   3  committed locally but NOT pushed (remote unreachable / rejected)
+#   4  could not even commit (detached HEAD, conflict markers staged, commit refused)
 sj_data_push() {  # sj_data_push <commit-message>
-  local msg="$1" data
+  local msg="$1" data rc
   [ "${SCRUBJAY_LOG_NOGIT:-0}" = "1" ] && return 0
   data="$(sj_data 2>/dev/null)" || return 0
   [ -n "$data" ] && [ -d "$data/.git" ] || return 0
   (
-    cd "$data" || exit 0
+    cd "$data" || exit 4
 
     # Self-heal before touching anything. A previous session's push fallback may have left an
     # interrupted rebase/merge (a conflict, or — more insidiously — a commit that went empty and
@@ -577,13 +587,17 @@ sj_data_push() {  # sj_data_push <commit-message>
       git merge --abort 2>/dev/null || true
     fi
     # Commits on a detached HEAD can never push — bail rather than orphan work.
-    git symbolic-ref -q HEAD >/dev/null 2>&1 || exit 0
+    git symbolic-ref -q HEAD >/dev/null 2>&1 || exit 4
 
-    git add -A 2>/dev/null
+    # An `add` that failed stages nothing, and the check below then reads as "nothing to commit".
+    git add -A 2>/dev/null || exit 4
     git diff --cached --quiet 2>/dev/null && exit 0   # nothing to commit
     # Never commit a tree carrying conflict markers (unambiguous start/end lines).
-    git diff --cached | grep -qE '^\+(<{7} |>{7} )' && exit 0
-    git commit -q -m "$msg" 2>/dev/null || exit 0
+    git diff --cached | grep -qE '^\+(<{7} |>{7} )' && exit 4
+    git commit -q -m "$msg" 2>/dev/null || exit 4
+    # A data repo with no remote is a deliberate single-machine setup, not a failed push: the
+    # commit IS the whole publication step there, so don't cry about a remote that never existed.
+    git remote get-url origin >/dev/null 2>&1 || exit 0
     if ! sj_timeout 20 git push -q 2>/dev/null; then
       # Remote moved on: rebase our commit onto it and retry. What makes this wedge-proof where a
       # bare `git pull --rebase` was not is that nothing here can stop on a conflict:
@@ -597,13 +611,32 @@ sj_data_push() {  # sj_data_push <commit-message>
       # Belt and suspenders: if anything still fails, abort so the next session starts clean.
       if sj_timeout 20 git fetch -q origin 2>/dev/null \
          && sj_timeout 30 git rebase -X ours -q origin/main 2>/dev/null; then
-        sj_timeout 20 git push -q 2>/dev/null || true
+        sj_timeout 20 git push -q 2>/dev/null || exit 3
       else
         git rebase --abort 2>/dev/null || true
+        exit 3
       fi
     fi
-  ) >/dev/null 2>&1 || true
+    exit 0
+  ) >/dev/null 2>&1
+  rc=$?
+  case "$rc" in
+    0) sj_record_data_push ok "$data" ;;
+    3) sj_record_data_push fail "$data" "committed-not-pushed" ;;
+    *) sj_record_data_push fail "$data" "could-not-commit rc=$rc" ;;
+  esac
   return 0
+}
+
+# Breadcrumb for the data repo, same contract as the transcript and memory ones: written by
+# sj_data_push (which is silent by design), read by hooks/sync-session.sh so a machine that has
+# stopped publishing its catalogue rows says so at the next SessionStart rather than in a month.
+sj_data_status_file() { printf '%s' "$HOME/.config/scrubjay/last-data-push"; }
+sj_record_data_push() {  # sj_record_data_push <ok|fail> <data-repo> [detail]
+  local result="$1" data="$2" detail="${3:-}" f
+  f="$(sj_data_status_file)"; mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+  printf 'result=%s ts=%s host=%s repo=%s%s\n' \
+    "$result" "$(date +%FT%T)" "$(sj_host)" "$data" "${detail:+ detail=$detail}" > "$f" 2>/dev/null || true
 }
 
 # A topic, made safe to sit in a catalogue row. The row quotes the topic and separates its fields

@@ -116,4 +116,36 @@ rm -rf "$MEM"
 sync "" pull >/dev/null 2>&1
 assert_no_file "no repo is created without a remote" "$MEM/.git/HEAD"
 
+# ── best-effort covers the remote, not the caller ───────────────────────────────────────────────
+# "always exits 0" is about a remote that is down: the run degrades and the breadcrumb carries the
+# outcome. A mode this script does not implement is a different thing entirely — nothing was even
+# attempted, and exiting 0 told the caller its sync had happened.
+section "a usage error is not swallowed by the best-effort contract"
+check_fails "an unknown mode exits non-zero" \
+  env SCRUBJAY_MEMORY="$MEM" SCRUBJAY_MEMORY_REMOTE="$SANDBOX/whatever.git" \
+  bash "$APP/bin/memory-sync.sh" psuh
+assert_contains "and says which modes exist" \
+  "$(SCRUBJAY_MEMORY="$MEM" SCRUBJAY_MEMORY_REMOTE="$SANDBOX/whatever.git" \
+     bash "$APP/bin/memory-sync.sh" psuh 2>&1 >/dev/null)" "use pull|push"
+
+# ── /sjnote --push must not claim a publication that did not happen ────────────────────────────
+# memory-sync.sh always exits 0, so sj-note.sh could not learn anything from its status and printed
+# "published to <remote>" unconditionally — including for a note that never left the machine. It
+# reads the breadcrumb now.
+section "a note reports what actually reached the remote"
+rm -rf "$MEM"
+LIVE="$SANDBOX/note-live.git"; seed_bare "$LIVE"
+note_out() {  # note_out <remote>
+  printf '# A note about tuning\n\nbody\n' | \
+    SCRUBJAY_MEMORY="$MEM" SCRUBJAY_MEMORY_REMOTE="$1" \
+    bash "$APP/bin/sj-note.sh" --project -home-user-noted 2>&1        # publishing is the default
+}
+assert_contains "a real publication says published" "$(note_out "$LIVE")" "published to"
+assert_eq "and the note is in the remote" "1" \
+  "$(git --git-dir="$LIVE" log --oneline main -- -home-user-noted 2>/dev/null | wc -l | tr -d ' ')"
+
+out="$(note_out "$SANDBOX/gone.git")"
+assert_contains "an unreachable remote says NOT published" "$out" "NOT published"
+assert_contains "and points at the retry" "$out" "memory-sync.sh push"
+
 finish

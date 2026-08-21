@@ -9,17 +9,23 @@ transport_ship() {  # transport_ship <src> <relpath> [mirror]   (src may be a fi
   chats="$(sj_chats)"
   [ -n "$chats" ] && [ -d "$chats/.git" ] || return 0
   local dst="$chats/$relpath"
+  # The copy's exit status is load-bearing, not decoration. Everything below judges success by what
+  # git has to commit — and a copy that never happened stages nothing, so `git diff --cached
+  # --quiet` reports "unchanged -> no commit" and this function returns 0. A full disk or an
+  # unwritable clone therefore recorded `result=ok` in the ship breadcrumb, which is the exact
+  # signal that exists to catch a relay that is quietly eating transcripts. Fail closed instead.
   if [ -d "$src" ]; then
-    mkdir -p "$dst"
+    mkdir -p "$dst" || return 1
     if [ "$mode" = mirror ]; then              # authoritative: drop dest entries not in src (flat dir)
       for d in "$dst"/*; do
         [ -e "$d" ] || continue; b="$(basename "$d")"
         [ -e "$src/$b" ] || rm -rf -- "$d" 2>/dev/null || true
       done
     fi
-    cp -a "$src/." "$dst/"
+    cp -a "$src/." "$dst/" || return 1
   else
-    mkdir -p "$(dirname "$dst")"; cp -f "$src" "$dst"
+    mkdir -p "$(dirname "$dst")" || return 1
+    cp -f "$src" "$dst" || return 1
   fi
   # Return the commit+push result (0 = relayed or already up to date) so a broken relay surfaces
   # via ship-transcript.sh's breadcrumb. Never aborts the caller — it's not `set -e`.

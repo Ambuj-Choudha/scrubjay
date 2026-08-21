@@ -31,12 +31,15 @@ cwd="${5:-}"                                   # session working dir (for projec
 
 backend="${SCRUBJAY_TRANSCRIPT_BACKEND:-git}"
 impl="$APP/hooks/transports/$backend.sh"
-[ -f "$impl" ] || { echo "ship-transcript: unknown backend '$backend'" >&2; exit 0; }
+# A misconfigured backend or a missing adapter means nothing was archived. Say so with the exit
+# status: direct callers (backfill, reconcile, a human at a prompt) can react, and the hooks that
+# must not block a session already suppress this script's status.
+[ -f "$impl" ] || { echo "ship-transcript: unknown backend '$backend'" >&2; exit 1; }
 # shellcheck source=/dev/null  # backend chosen at runtime; see hooks/transports/<backend>.sh
 . "$impl"
 
 harness="$(sj_harness)"
-sj_load_adapter "$harness" || exit 0
+sj_load_adapter "$harness" || { echo "ship-transcript: unknown harness '$harness'" >&2; exit 1; }
 
 # 1) the transcript itself. This push is the canonical "is the relay working?" signal — record its
 #    outcome as a machine-local breadcrumb so a silent failure (e.g. an unauthorized relay key) is
@@ -44,6 +47,7 @@ sj_load_adapter "$harness" || exit 0
 transport_ship "$src" "$host/$slug/$sid.$(sjh_transcript_ext)"; ship_rc=$?
 if [ "$ship_rc" -eq 0 ]; then sj_record_ship ok "$sid" "$backend"
 else sj_record_ship fail "$sid" "$backend" "$ship_rc"; fi
+failed=0                                       # secondary records that did not make it
 
 # The session cwd: given by the hook payload, else recovered from the transcript.
 [ -n "$cwd" ] || cwd="$(sjh_session_cwd "$src")"
@@ -51,9 +55,14 @@ else sj_record_ship fail "$sid" "$backend" "$ship_rc"; fi
 # 2) the session's other records. The adapter names them; we just relay them. It may normalize
 #    files in place first (Claude's plans get <date>_<topic>.md names), and may ask for `mirror`
 #    to make the relay copy authoritative. A record that doesn't exist is skipped.
+#    A record that fails to ship is counted: the transcript reaching the archive without its plans
+#    or subagent transcripts is a partial archive, and it used to look identical to a clean one.
 while IFS=$'\t' read -r a_src a_rel a_mode; do
   [ -n "$a_src" ] && [ -n "$a_rel" ] && [ -e "$a_src" ] || continue
-  transport_ship "$a_src" "$host/$a_rel" ${a_mode:+"$a_mode"}
+  if ! transport_ship "$a_src" "$host/$a_rel" ${a_mode:+"$a_mode"}; then
+    failed=$((failed+1))
+    echo "ship-transcript: could not relay $a_rel" >&2
+  fi
 done < <(sjh_extra_artifacts "$src" "$sid" "$slug" "$cwd")
 
 # 3) human-readable rendering (clean conversation). Additive: the machine-format tree above is
@@ -62,7 +71,26 @@ done < <(sjh_extra_artifacts "$src" "$sid" "$slug" "$cwd")
 rel="$(sj_readable_relpath "$src" "$sid" "$cwd" "$(sjh_session_topic "$src")")"
 tmpmd="$(mktemp 2>/dev/null)" || tmpmd=""
 if [ -n "$tmpmd" ]; then
-  sjh_render "$src" > "$tmpmd" 2>/dev/null
-  [ -s "$tmpmd" ] && transport_ship "$tmpmd" "$host/readable/$rel.md"
+  if ! sjh_render "$src" > "$tmpmd" 2>/dev/null || [ ! -s "$tmpmd" ]; then
+    # An empty rendering is not "nothing to render": the transcript exists, so the renderer either
+    # broke or hit a format it no longer understands, and /sjrecall searches the readable tree.
+    failed=$((failed+1))
+    echo "ship-transcript: readable rendering of $sid produced nothing" >&2
+  elif ! transport_ship "$tmpmd" "$host/readable/$rel.md"; then
+    failed=$((failed+1))
+    echo "ship-transcript: could not relay readable/$rel.md" >&2
+  fi
   rm -f "$tmpmd"
+else
+  failed=$((failed+1))
+  echo "ship-transcript: no temp file for the readable rendering" >&2
 fi
+
+# The machine-format transcript is what the breadcrumb's ok/fail is about, so a partial archive
+# keeps its own word: enough to be surfaced at the next SessionStart, without claiming the
+# transcript itself was lost. Exit status still tracks the transcript only — reconcile counts a
+# session as recovered when the transcript landed.
+if [ "$ship_rc" -eq 0 ] && [ "$failed" -gt 0 ]; then
+  sj_record_ship partial "$sid" "$backend" "$failed"
+fi
+exit "$ship_rc"

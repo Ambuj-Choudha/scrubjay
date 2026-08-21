@@ -186,4 +186,63 @@ assert_eq "a small artifact is untouched — no cap noise on the common case" "f
 check "SJMCP_GET_MAX_CHARS overrides the default" \
   bash -c '[ "$1" -le 5000 ]' _ "$(j .env_get_chars)"
 
+# ── sj_recall: "nothing found" and "could not look" are different answers ──────────────────────
+# The prefilter's failures all reduced to an empty hit list, which recall then reported as
+# count=0 — and a caller acts on that by concluding the session was never archived, then
+# re-doing work that is sitting in the archive. Degraded searches now say so on the result.
+section "sj_recall distinguishes an empty archive from a broken search"
+R="$SANDBOX/recall.json"
+SJ_SERVER="$SERVER" python3 - "$R" <<'PY'
+import importlib.util, json, os, subprocess, sys
+
+spec = importlib.util.spec_from_file_location("sjmcp_server", os.environ["SJ_SERVER"])
+m = importlib.util.module_from_spec(spec)
+sys.modules["sjmcp_server"] = m
+spec.loader.exec_module(m)
+
+real_run = m.subprocess.run
+clean = m.core_recall("energy tab")
+nomatch = m.core_recall("a phrase no transcript could possibly contain")
+
+m.subprocess.run = lambda *a, **k: (_ for _ in ()).throw(OSError("No such file or directory: 'rg'"))
+missing = m.core_recall("energy tab")
+
+def broken(cmd, **k):                       # the search ran, but not over everything
+    return subprocess.CompletedProcess(cmd, 2, "", "grep: /nope: Permission denied\n")
+m.subprocess.run = broken
+partial = m.core_recall("energy tab")
+
+def slow(cmd, **k):
+    raise subprocess.TimeoutExpired(cmd, 30)
+m.subprocess.run = slow
+timedout = m.core_recall("energy tab")
+
+m.subprocess.run = real_run
+json.dump({
+    "clean_hits": clean["count"],
+    "clean_flags": sorted(set(clean) & {"warnings", "partial"}),
+    "nomatch_hits": nomatch["count"],
+    "nomatch_flags": sorted(set(nomatch) & {"warnings", "partial"}),
+    "missing_partial": missing.get("partial", False),
+    "missing_warning": " ".join(missing.get("warnings", [])),
+    "broken_partial": partial.get("partial", False),
+    "broken_warning": " ".join(partial.get("warnings", [])),
+    "timeout_warning": " ".join(timedout.get("warnings", [])),
+}, open(sys.argv[1], "w"), indent=1)
+PY
+rc=$?
+check "the recall probe ran" test "$rc" = 0
+if [ "$rc" = 0 ]; then
+  r() { jq -r "$1" "$R"; }
+  check "a working recall finds the fixture" bash -c '[ "$1" -gt 0 ]' _ "$(r .clean_hits)"
+  assert_eq "and carries no degradation flags" "[]" "$(r '.clean_flags | tostring')"
+  assert_eq "a genuine no-match is still count=0" "0" "$(r .nomatch_hits)"
+  assert_eq "and is NOT dressed up as a failure" "[]" "$(r '.nomatch_flags | tostring')"
+  assert_eq "a search tool that will not run marks the result partial" "true" "$(r .missing_partial)"
+  assert_contains "and says the archive was not searched" "$(r .missing_warning)" "NOT searched"
+  assert_eq "a non-zero search status marks the result partial" "true" "$(r .broken_partial)"
+  assert_contains "and passes the tool's own complaint through" "$(r .broken_warning)" "Permission denied"
+  assert_contains "a timed-out prefilter says results are incomplete" "$(r .timeout_warning)" "timed out"
+fi
+
 finish
