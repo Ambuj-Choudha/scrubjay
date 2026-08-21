@@ -18,8 +18,7 @@ set -uo pipefail
 
 APP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$APP/bin/lib.sh"; sj_load_config
-
-warn() { printf '\033[1;33m!\033[0m memory-sync: %s\n' "$*" >&2; }   # loud, but never blocks (exit stays 0)
+SJ_UI_PREFIX=memory-sync   # runs from a hook, so its lines land inside someone else's output
 
 mode="${1:-pull}"
 mem="$(sj_memory)"
@@ -56,7 +55,7 @@ if [ "$cur" != "$remote" ]; then
   if [ -z "$cur" ]; then git remote add origin "$remote" 2>/dev/null || true
   else
     git remote set-url origin "$remote" 2>/dev/null || true
-    warn "memory remote moved: '$cur' -> '$remote' (origin re-pointed from the config)"
+    sj_warn "memory remote moved: '$cur' -> '$remote' (origin re-pointed from the config)"
   fi
 fi
 
@@ -104,8 +103,8 @@ case "$mode" in
         # Genuinely couldn't reconcile (conflict / remote unreachable): surface it instead of
         # swallowing — the commit is safe locally but UNPUBLISHED until resolved by hand. The
         # breadcrumb is what actually reaches you: both callers are hooks that discard stderr.
-        warn "push to '$remote' failed and auto-reconcile didn't complete — local memory committed but NOT on the NAS."
-        warn "resolve with:  git -C '$mem' pull --rebase && git -C '$mem' push"
+        sj_warn "push to '$remote' failed and auto-reconcile didn't complete — local memory committed but NOT on the NAS."
+        sj_warn "resolve with:  git -C '$mem' pull --rebase && git -C '$mem' push"
         sj_record_memory_sync fail push "$remote" "ahead=$(git rev-list --count origin/$branch..$branch 2>/dev/null || echo '?')"
       fi
     else

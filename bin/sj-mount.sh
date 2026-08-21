@@ -27,12 +27,12 @@
 # SCRUBJAY_LOCAL_CHATS.  Sourcing with SCRUBJAY_MOUNT_LIB=1 defines the functions without running.
 set -uo pipefail
 
+# No APP variable: this file is also sourced as a library (SCRUBJAY_MOUNT_LIB=1), and a sourced
+# script must not overwrite a name in its caller's shell.
+. "$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin/lib.sh"
+
 # UI goes to stderr so stdout carries only the final storage path (LOCAL_CHATS=$(sj-mount.sh)).
-info() { printf '\033[1;34m›\033[0m %s\n' "$*" >&2; }
-ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*" >&2; }
-warn() { printf '\033[1;33m!\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
-have() { command -v "$1" >/dev/null 2>&1; }
+SJ_UI_STREAM=2
 
 # ── pure generators (no side effects — this is what tests assert on) ──────────────────────────
 
@@ -90,7 +90,7 @@ UNIT
 sjm_unit_name() { systemd-escape -p --suffix=mount "$1"; }
 
 # Do we drive systemd, or fall back to fstab?
-sjm_use_systemd() { have systemd-escape && have systemctl; }
+sjm_use_systemd() { sj_has systemd-escape && sj_has systemctl; }
 
 # The archive directory created on the share — relative to the mountpoint, and nesting is fine
 # (some appliances hand you one fixed top-level share, so `team/scrubjay-storage` is a real shape).
@@ -142,23 +142,23 @@ case "${1:-}" in
   -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "${BASH_SOURCE[0]}"; exit 0;;
 esac
 
-[ -n "$SERVER" ] || die "SCRUBJAY_NAS_SERVER is required (the NAS host/IP)."
-[ -n "$EXPORT" ] || die "SCRUBJAY_NAS_EXPORT is required (the export/share path on the NAS)."
-case "$PROTO" in nfs|cifs) : ;; *) die "SCRUBJAY_NAS_PROTO must be nfs or cifs (got '$PROTO')." ;; esac
+[ -n "$SERVER" ] || sj_die "SCRUBJAY_NAS_SERVER is required (the NAS host/IP)."
+[ -n "$EXPORT" ] || sj_die "SCRUBJAY_NAS_EXPORT is required (the export/share path on the NAS)."
+case "$PROTO" in nfs|cifs) : ;; *) sj_die "SCRUBJAY_NAS_PROTO must be nfs or cifs (got '$PROTO')." ;; esac
 STORE_DIR="$(sjm_storage_dir "$STORE_DIR")" \
-  || die "SCRUBJAY_STORAGE_DIR must be a path inside the mountpoint — relative, no '.' or '..' (got '${SCRUBJAY_STORAGE_DIR:-}')."
+  || sj_die "SCRUBJAY_STORAGE_DIR must be a path inside the mountpoint — relative, no '.' or '..' (got '${SCRUBJAY_STORAGE_DIR:-}')."
 
 FSTYPE="$(sjm_fstype "$PROTO")"
 WHAT="$(sjm_what "$PROTO" "$SERVER" "$EXPORT")"
 OPTS="$(sjm_opts "$PROTO" "$CREDS" "$(id -u)" "$(id -g)" "$EXTRA")"
 STORAGE="$MP/$STORE_DIR"
 
-info "NAS mount plan:"
+sj_info "NAS mount plan:"
 printf '    %s  ->  %s   (%s)\n    options: %s\n    archive: %s\n' "$WHAT" "$MP" "$FSTYPE" "$OPTS" "$STORAGE" >&2
 
 # CIFS: we never touch the password. Point at the credentials file and stop short of it.
 if [ "$PROTO" = cifs ] && [ ! -f "$CREDS" ]; then
-  warn "cifs needs a credentials file at $CREDS (this script will not create or read it)."
+  sj_warn "cifs needs a credentials file at $CREDS (this script will not create or read it)."
   cat >&2 <<EOF
     Create it yourself with root, mode 600:
       sudo install -m600 /dev/null $CREDS
@@ -168,12 +168,12 @@ if [ "$PROTO" = cifs ] && [ ! -f "$CREDS" ]; then
       CREDS
     Then re-run this script.
 EOF
-  [ "$PRINT_ONLY" = 1 ] || die "no credentials file — placed it, then re-run."
+  [ "$PRINT_ONLY" = 1 ] || sj_die "no credentials file — placed it, then re-run."
 fi
 
 # Already mounted? Nothing to install; go straight to verify.
 if mountpoint -q "$MP" 2>/dev/null; then
-  ok "$MP is already a mount — skipping install."
+  sj_ok "$MP is already a mount — skipping install."
 else
   # Build the config text and choose the install method.
   if sjm_use_systemd; then
@@ -206,8 +206,8 @@ else
   do_install=0
   if [ "$PRINT_ONLY" = 1 ]; then
     :
-  elif ! have sudo; then
-    warn "sudo not available — printing the steps instead."
+  elif ! sj_has sudo; then
+    sj_warn "sudo not available — printing the steps instead."
   elif [ "$YES" = 1 ]; then
     do_install=1
   elif [ -t 0 ] && { read -r -p "  install + mount now with sudo? [Y/n] " a || a=""; case "${a:-Y}" in [Yy]*|"") true;; *) false;; esac; }; then
@@ -215,24 +215,24 @@ else
   fi
 
   if [ "$do_install" = 1 ]; then
-    if install_cmds; then ok "mounted $MP"; else warn "install/mount failed — apply the steps by hand:"; manual_steps; fi
+    if install_cmds; then sj_ok "mounted $MP"; else sj_warn "install/mount failed — apply the steps by hand:"; manual_steps; fi
   else
-    info "apply these steps with root, then re-run to verify:"; manual_steps
+    sj_info "apply these steps with root, then re-run to verify:"; manual_steps
   fi
 fi
 
 # ── verify: live + writable (cures the silent 'backend inactive' no-op) ───────────────────────
 if ! mountpoint -q "$MP" 2>/dev/null; then
-  die "$MP is not a live mount — the local backend would silently no-op. Fix the mount, then re-run."
+  sj_die "$MP is not a live mount — the local backend would silently no-op. Fix the mount, then re-run."
 fi
 # The check above is about $MP; the archive is what actually gets written to. Confirm they are the
 # same filesystem before creating anything, or a symlink on the share turns a green run into an
 # archive on the local disk.
 sjm_confined "$MP" "$STORAGE" \
-  || die "$STORAGE resolves outside $MP (a symlink on the share?) — the archive would land off the NAS."
-mkdir -p "$STORAGE" 2>/dev/null || die "cannot create $STORAGE (mount not writable?)."
+  || sj_die "$STORAGE resolves outside $MP (a symlink on the share?) — the archive would land off the NAS."
+mkdir -p "$STORAGE" 2>/dev/null || sj_die "cannot create $STORAGE (mount not writable?)."
 probe="$STORAGE/.sjwrite.$$"
-if ( : > "$probe" ) 2>/dev/null; then rm -f "$probe"; else die "$STORAGE is not writable."; fi
+if ( : > "$probe" ) 2>/dev/null; then rm -f "$probe"; else sj_die "$STORAGE is not writable."; fi
 
-ok "NAS mount verified. Set SCRUBJAY_LOCAL_CHATS=$STORAGE"
+sj_ok "NAS mount verified. Set SCRUBJAY_LOCAL_CHATS=$STORAGE"
 printf '%s\n' "$STORAGE"

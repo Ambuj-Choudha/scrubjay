@@ -11,6 +11,26 @@ sj_load_config() {
   : "${SCRUBJAY_TRANSCRIPT_BACKEND:=git}"
 }
 
+# ---- terminal UI ------------------------------------------------------------------------------
+# The four marks every human-facing script prints. They used to be a private info/ok/warn/die
+# quartet re-declared at the top of eleven scripts — identical bytes, except where they weren't:
+# some routed info/ok to stderr, some to stdout, and two carried a script-name prefix. That is a
+# lot of surface for a cosmetic detail, and it is why tests/test_snapshot.sh has to pin "source
+# this one in a subshell or it redirects your output". One definition, two knobs instead:
+#
+#   SJ_UI_STREAM=2   send info/ok/step to stderr. For a script whose STDOUT is its result —
+#                    bin/sj-mount.sh prints the storage path, bin/sj-paste.sh the note path — so
+#                    progress chatter must not land in the value a caller captures.
+#   SJ_UI_PREFIX=x   prefix every line with "x: ". For a script whose output surfaces inside
+#                    someone else's stream (bin/memory-sync.sh runs from a hook).
+#
+# warn/die always go to stderr: they are the lines a caller redirecting stdout still needs to see.
+sj_info() { printf '\033[1;34m›\033[0m %s%s\n' "${SJ_UI_PREFIX:+$SJ_UI_PREFIX: }" "$*" >&"${SJ_UI_STREAM:-1}"; }
+sj_ok()   { printf '\033[1;32m✓\033[0m %s%s\n' "${SJ_UI_PREFIX:+$SJ_UI_PREFIX: }" "$*" >&"${SJ_UI_STREAM:-1}"; }
+sj_step() { printf '\033[1;36m—\033[0m %s%s\n' "${SJ_UI_PREFIX:+$SJ_UI_PREFIX: }" "$*" >&"${SJ_UI_STREAM:-1}"; }
+sj_warn() { printf '\033[1;33m!\033[0m %s%s\n' "${SJ_UI_PREFIX:+$SJ_UI_PREFIX: }" "$*" >&2; }
+sj_die()  { printf '\033[1;31m✗ %s%s\033[0m\n' "${SJ_UI_PREFIX:+$SJ_UI_PREFIX: }" "$*" >&2; exit 1; }
+
 # ---- portability: GNU coreutils vs BSD/macOS ---------------------------------------------------
 # scrubjay grew up on Linux, so GNU flags leaked in. Most of them fail *quietly* off GNU — a
 # `2>/dev/null || echo 0` fallback turns "this tool doesn't exist here" into a plausible-looking
@@ -711,4 +731,88 @@ sj_archive_copy() {  # sj_archive_copy <root> <relpath> <dst>
   if   [ -d "$real_src" ]; then mkdir -p "$dst" && cp -a "$real_src/." "$dst/"
   elif [ -f "$real_src" ]; then mkdir -p "$(dirname "$dst")" && cp -f "$real_src" "$dst"
   else return 1; fi
+}
+
+# --- onboarding plumbing: ssh and the machine-local config -------------------------------------
+# Every onboarding script (onboard.sh, onboard-memory.sh, onboard-mcp-client.sh,
+# onboard-hpc-client.sh) does the same four things to bring a machine up: read the working relay
+# alias, mint a dedicated key, add an ssh alias for it, and record a pointer in
+# ~/.config/scrubjay/config. Each had written that out longhand, and the copies had already
+# diverged — one derived the receiver's user from the alias and another defaulted to $USER (which
+# reached a nonexistent account), one wrote IdentitiesOnly and another didn't.
+
+# One field of ssh's EFFECTIVE config for an alias — what ssh itself would use, so an alias reached
+# through an Include or a Match block reports the values the relay actually connects with. Field
+# names are `ssh -G`'s own, always lowercase: hostname, port, user, proxyjump.
+#
+# Every onboarding path derives the whole connection from the ONE alias already known to work
+# (`scrubjay-receiver`) rather than asking again: memory and sjmcp ride the same box, same account
+# and same jump host as the transcript relay, and only the key differs — the receiver pins each key
+# to a single forced command. Prints nothing (and succeeds) when the alias or the field is absent;
+# callers supply their own default, since "unset" is a normal first-run state.
+sj_ssh_conf() {  # sj_ssh_conf <alias> <field>
+  ssh -G "$1" 2>/dev/null | awk -v k="$2" '$1 == k { print $2; exit }'
+}
+
+# A passphraseless ed25519 key at <path>, created only if absent.
+#
+# Passphraseless is not laziness: every key this mints is used by a non-interactive hook, and the
+# far end pins it to one forced command, so a leak can only replay that command. Returns 0 when it
+# generated one, 1 when a key was already there, 2 when ssh-keygen failed — callers report those
+# three cases in their own words.
+sj_ssh_keygen() {  # sj_ssh_keygen <path> <comment>
+  local key="$1" comment="$2"
+  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+  [ -f "$key" ] && return 1
+  ssh-keygen -t ed25519 -N "" -f "$key" -C "$comment" >/dev/null 2>&1 || return 2
+  chmod 600 "$key" 2>/dev/null || true
+}
+
+# Append a `Host <alias>` block to ~/.ssh/config. Idempotent by alias NAME, not by content: a block
+# someone has hand-tuned (an extra option, a different jump) is left exactly as it is, which is the
+# only safe reading of a file that is also a human's. Returns 1 when the alias was already there.
+#
+# ProxyJump is emitted last and only when there is one — `ssh -G` reports the absence as the literal
+# string `none`, which as a real ProxyJump value means "no jump", so writing it out is harmless but
+# reads like a mistake. Extra `Key value` options are appended before it.
+sj_ssh_alias() {  # sj_ssh_alias <alias> <host> <port> <user> <key> <proxyjump> [option…]
+  local alias="$1" host="$2" port="$3" user="$4" key="$5" jump="$6" cfg="$HOME/.ssh/config" opt
+  shift 6
+  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+  touch "$cfg" && chmod 600 "$cfg"
+  grep -qE "^[Hh]ost[[:space:]]+$alias\$" "$cfg" && return 1
+  { echo
+    echo "Host $alias"
+    echo "    HostName $host"
+    [ -n "$port" ] && echo "    Port $port"
+    echo "    User $user"
+    echo "    IdentityFile $key"
+    for opt in "$@"; do echo "    $opt"; done
+    [ -n "$jump" ] && [ "$jump" != none ] && echo "    ProxyJump $jump"
+  } >> "$cfg"
+  return 0
+}
+
+# One `: "${KEY:=value}"` line of ~/.config/scrubjay/config. The shape matters: the config is
+# sourced, so `:=` makes it first-assignment-wins — an env var set by the caller (or by a test's
+# sandbox) beats the file, which is what lets every script be driven unattended.
+sj_config_kv() {  # sj_config_kv <key> <value>
+  printf ': "${%s:=%s}"\n' "$1" "$2"
+}
+
+# Append <line>s to ~/.config/scrubjay/config unless <key> already appears in it, keeping a
+# timestamped backup of what was there. Returns 1 when the key was already present (nothing
+# written), so the caller can say "already configured" rather than claiming it wrote something.
+#
+# Checking first is not politeness: because the file is first-assignment-wins, a second `:=` line
+# for a key that is already set is a SILENT no-op. Appending one anyway would leave a config that
+# reads as if it had been changed and behaves as if it hadn't.
+sj_config_add() {  # sj_config_add <key> <line…>
+  local key="$1" cfg="$HOME/.config/scrubjay/config"
+  shift
+  mkdir -p "$(dirname "$cfg")" && touch "$cfg"
+  grep -q "$key" "$cfg" && return 1
+  cp "$cfg" "$cfg.bak.$(date +%s)"
+  printf '%s\n' "$@" >> "$cfg"
+  return 0
 }

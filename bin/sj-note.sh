@@ -36,8 +36,7 @@ set -uo pipefail
 # that's GNU-only (see the portability shims at the top of bin/lib.sh, and AGENTS.md).
 APP="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || exit 1
 . "$APP/bin/lib.sh"; sj_load_config
-
-die() { printf '\033[1;31m✗\033[0m sj-note: %s\n' "$*" >&2; exit 1; }
+SJ_UI_PREFIX=sj-note   # this script's errors surface next to a harness's own output
 
 topic=""; project=""; from=""; push=1
 while [ $# -gt 0 ]; do
@@ -48,26 +47,26 @@ while [ $# -gt 0 ]; do
     --no-push) push=0; shift ;;
     -h|--help) sed -n '8,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -)         shift ;;
-    *)         die "unknown argument '$1' (see --help)" ;;
+    *)         sj_die "unknown argument '$1' (see --help)" ;;
   esac
 done
 
 MEM="$(sj_memory)"
-[ -n "$MEM" ] || die "SCRUBJAY_MEMORY is unset — run bin/onboard-memory.sh (or /sjmemory) first"
+[ -n "$MEM" ] || sj_die "SCRUBJAY_MEMORY is unset — run bin/onboard-memory.sh (or /sjmemory) first"
 
 # ---- body ------------------------------------------------------------------------------------
 # --from promotes a file that already exists (typically something written to the session scratchpad
 # before anyone thought about where it should live). It COPIES: the source may still be open in an
 # editor, and the scratchpad cleans itself up anyway.
-body="$(mktemp)" || die "cannot create a temp file"
+body="$(mktemp)" || sj_die "cannot create a temp file"
 trap 'rm -f "$body"' EXIT
 if [ -n "$from" ]; then
-  [ -f "$from" ] || die "no such file: $from"
-  cat -- "$from" > "$body" || die "cannot read $from"
+  [ -f "$from" ] || sj_die "no such file: $from"
+  cat -- "$from" > "$body" || sj_die "cannot read $from"
 else
   cat > "$body"
 fi
-[ -s "$body" ] || die "empty note (pass --from <file>, or pipe the body in on stdin)"
+[ -s "$body" ] || sj_die "empty note (pass --from <file>, or pipe the body in on stdin)"
 
 # ---- name ------------------------------------------------------------------------------------
 # Topic: what the caller said, else the document's own first heading — the same rule
@@ -77,7 +76,7 @@ topic="$(sj_slugify "$topic" 50)"
 [ -n "$topic" ] || topic="note"
 
 [ -n "$project" ] || project="$(sj_project_key "$PWD")"
-[ -n "$project" ] || die "cannot determine the project key for $PWD"
+[ -n "$project" ] || sj_die "cannot determine the project key for $PWD"
 
 # Session backlink, best-effort: ask the harness adapter for the transcript of the session running
 # in this cwd right now. Absent (no harness, no session, backfill) the note simply carries no id.
@@ -89,9 +88,9 @@ if sid_path="$(sj_adapter_call "$(sj_harness)" sjh_find_live_transcript "$PWD" 2
 fi
 
 dir="$MEM/$project/notes"
-mkdir -p "$dir" || die "cannot create $dir"
+mkdir -p "$dir" || sj_die "cannot create $dir"
 target="$(sj_unique_path "$dir" "$(date +%F)_${topic}${sid8}" md)"
-cp -- "$body" "$target" || die "cannot write $target"
+cp -- "$body" "$target" || sj_die "cannot write $target"
 
 # ---- index -----------------------------------------------------------------------------------
 # ONE line in MEMORY.md, rewritten in place, never one line per note. MEMORY.md is auto-loaded into
@@ -102,7 +101,7 @@ index="$MEM/$project/MEMORY.md"
 n=0; for f in "$dir"/*.md; do [ -f "$f" ] && n=$((n + 1)); done
 plural="s"; [ "$n" = 1 ] && plural=""
 line="- notes/ — $n document$plural, not auto-loaded; retrieve with /sjrecall or /sjbrowse note"
-tmp="$(mktemp)" || die "cannot create a temp file"
+tmp="$(mktemp)" || sj_die "cannot create a temp file"
 if [ -f "$index" ]; then grep -v '^- notes/ ' "$index" > "$tmp"; else printf '# Memory index\n\n' > "$tmp"; fi
 printf '%s\n' "$line" >> "$tmp"
 mv -- "$tmp" "$index" 2>/dev/null || rm -f "$tmp"

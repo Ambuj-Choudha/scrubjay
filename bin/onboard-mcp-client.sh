@@ -20,16 +20,12 @@ set -uo pipefail
 APP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$APP/bin/lib.sh"; sj_load_config
 
-info() { printf '\033[1;34m›\033[0m %s\n' "$*"; }
-ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m!\033[0m %s\n' "$*" >&2; }
-
 CFGDIR="$HOME/.config/scrubjay"; CFG="$CFGDIR/config"; mkdir -p "$CFGDIR"; touch "$CFG"
 
 # If the archive is mounted here, MCP runs locally (Phase 1) — nothing remote to set up.
 chats="${SCRUBJAY_LOCAL_CHATS:-}"
 if [ -n "$chats" ] && [ -d "$chats" ]; then
-  ok "this box has the archive mounted ($chats) — MCP runs locally; no remote path needed."
+  sj_ok "this box has the archive mounted ($chats) — MCP runs locally; no remote path needed."
   exit 0
 fi
 
@@ -41,74 +37,68 @@ serve="${MCP_SERVE_PATH:-<receiver-scrubjay-clone>/bin/sjmcp-serve.sh}"
 # Derive every connection field from the working relay alias — host, port, ProxyJump — so MCP rides
 # the same hops as the relay. Only User + key differ (the receiver pins each key to ONE forced
 # command: rrsync to append transcripts, sjmcp-serve to read the archive).
-recv_host="$(ssh -G "$RELAY_ALIAS" 2>/dev/null | awk '/^hostname /{print $2; exit}')"
-recv_port="$(ssh -G "$RELAY_ALIAS" 2>/dev/null | awk '/^port /{print $2; exit}')"
-recv_jump="$(ssh -G "$RELAY_ALIAS" 2>/dev/null | awk '/^proxyjump /{print $2; exit}')"
+recv_host="$(sj_ssh_conf "$RELAY_ALIAS" hostname)"
+recv_port="$(sj_ssh_conf "$RELAY_ALIAS" port)"
+recv_jump="$(sj_ssh_conf "$RELAY_ALIAS" proxyjump)"
 
 host="${MCP_RECV_HOST:-$recv_host}"
 port="${MCP_RECV_PORT:-${recv_port:-22}}"
 jump="${MCP_RECV_JUMP:-$recv_jump}"
 muser="${MCP_USER:-}"
 
-[ -n "$host" ]  || { warn "no '$RELAY_ALIAS' alias and no MCP_RECV_HOST — onboard the transcript relay first, or set MCP_RECV_HOST and re-run."; exit 1; }
-[ -n "$muser" ] || { warn "set MCP_USER=<owner account on the archive host> — the account with uv + the scrubjay clone + archive read (usually NOT the relay account), then re-run."; exit 1; }
+[ -n "$host" ]  || { sj_warn "no '$RELAY_ALIAS' alias and no MCP_RECV_HOST — onboard the transcript relay first, or set MCP_RECV_HOST and re-run."; exit 1; }
+[ -n "$muser" ] || { sj_warn "set MCP_USER=<owner account on the archive host> — the account with uv + the scrubjay clone + archive read (usually NOT the relay account), then re-run."; exit 1; }
 
-mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
-[ -f "$key" ] || { ssh-keygen -t ed25519 -N "" -f "$key" -C "$(sj_host) sjmcp" >/dev/null && ok "generated MCP key: $key"; }
+sj_ssh_keygen "$key" "$(sj_host) sjmcp" && sj_ok "generated MCP key: $key"
 
-SSHCFG="$HOME/.ssh/config"; touch "$SSHCFG"; chmod 600 "$SSHCFG"
-if ! grep -qE "^[Hh]ost[[:space:]]+$ALIAS\$" "$SSHCFG"; then
-  { echo; echo "Host $ALIAS"; echo "    HostName $host"; echo "    Port $port"
-    echo "    User $muser"; echo "    IdentityFile $key"; echo "    IdentitiesOnly yes"
-    echo "    RequestTTY no"
-    [ -n "$jump" ] && [ "$jump" != none ] && echo "    ProxyJump $jump"; } >> "$SSHCFG"
-  ok "ssh alias '$ALIAS' → $muser@$host:$port${jump:+ via $jump}"
+SSHCFG="$HOME/.ssh/config"
+if sj_ssh_alias "$ALIAS" "$host" "$port" "$muser" "$key" "$jump" "IdentitiesOnly yes" "RequestTTY no"; then
+  sj_ok "ssh alias '$ALIAS' → $muser@$host:$port${jump:+ via $jump}"
 else
-  ok "ssh alias '$ALIAS' already present in $SSHCFG"
+  sj_ok "ssh alias '$ALIAS' already present in $SSHCFG"
 fi
 
 # persist the pointer (idempotent; append only if absent, back up first)
-if ! grep -q SCRUBJAY_MCP_REMOTE "$CFG"; then
-  cp "$CFG" "$CFG.bak.$(date +%s)"
-  { echo "# sjmcp Phase-2: query the archive host's MCP server over SSH (far-end forced cmd:"
-    echo "# bin/sjmcp-serve.sh). The alias carries host/port/ProxyJump; see bin/onboard-mcp-client.sh."
-    echo ": \"\${SCRUBJAY_MCP_REMOTE:=$ALIAS}\""; } >> "$CFG"
-  ok "wrote SCRUBJAY_MCP_REMOTE=$ALIAS to $CFG"
+if sj_config_add SCRUBJAY_MCP_REMOTE \
+     "# sjmcp Phase-2: query the archive host's MCP server over SSH (far-end forced cmd:" \
+     "# bin/sjmcp-serve.sh). The alias carries host/port/ProxyJump; see bin/onboard-mcp-client.sh." \
+     "$(sj_config_kv SCRUBJAY_MCP_REMOTE "$ALIAS")"; then
+  sj_ok "wrote SCRUBJAY_MCP_REMOTE=$ALIAS to $CFG"
 else
-  ok "SCRUBJAY_MCP_REMOTE already set in $CFG"
+  sj_ok "SCRUBJAY_MCP_REMOTE already set in $CFG"
 fi
 export SCRUBJAY_MCP_REMOTE="$ALIAS"
 
 # register the remote MCP entry (idempotent; the server activates on the next Claude session)
-"$APP/bin/claude-sync.sh" >/dev/null 2>&1 && ok "claude-sync applied (MCP remote registered)" || warn "claude-sync failed"
+"$APP/bin/claude-sync.sh" >/dev/null 2>&1 && sj_ok "claude-sync applied (MCP remote registered)" || sj_warn "claude-sync failed"
 
 # The receiver side stays manual (like the relay + memory keys). Print the exact line(s) to install.
 pub="$(cat "$key.pub")"
 echo
-info "Final step — authorize this machine on the archive host. Copy this host's public key over,"
-info "then run ON THE ARCHIVE HOST, in its scrubjay clone (it writes the forced command for you"
-info "and appends safely):"
+sj_info "Final step — authorize this machine on the archive host. Copy this host's public key over,"
+sj_info "then run ON THE ARCHIVE HOST, in its scrubjay clone (it writes the forced command for you"
+sj_info "and appends safely):"
 echo
 echo "    bin/onboard-receiver.sh --authorize mcp <this-host.pub>"
 echo
-info "By hand instead — add ONE line to the '$muser' user's"
+sj_info "By hand instead — add ONE line to the '$muser' user's"
 # shellcheck disable=SC2088  # display text for the reader, not a path this script expands
-info "~/.ssh/authorized_keys ON THE ARCHIVE HOST (pins this key to the read-only server, nothing else):"
+sj_info "~/.ssh/authorized_keys ON THE ARCHIVE HOST (pins this key to the read-only server, nothing else):"
 echo
 printf '    command="%s",restrict %s\n' "$serve" "$pub"
 echo
-info "Use the ABSOLUTE path of bin/sjmcp-serve.sh in the scrubjay clone on the archive host"
-[ "${serve#<}" = "$serve" ] || info "(the <…> placeholder above means it couldn't be inferred from here — fill it in)."
+sj_info "Use the ABSOLUTE path of bin/sjmcp-serve.sh in the scrubjay clone on the archive host"
+[ "${serve#<}" = "$serve" ] || sj_info "(the <…> placeholder above means it couldn't be inferred from here — fill it in)."
 if [ -n "$jump" ] && [ "$jump" != none ]; then
   echo
-  info "ProxyJump detected ($jump) — the MCP key also needs the EDGE/bastion to allow the tunnel to"
-  info "the receiver. Add to the jump user's ~/.ssh/authorized_keys on '$jump' (same target the relay"
-  info "key already tunnels to):"
+  sj_info "ProxyJump detected ($jump) — the MCP key also needs the EDGE/bastion to allow the tunnel to"
+  sj_info "the receiver. Add to the jump user's ~/.ssh/authorized_keys on '$jump' (same target the relay"
+  sj_info "key already tunnels to):"
   echo
   printf '    restrict,port-forwarding,permitopen="%s:%s",command="/bin/false" %s\n' "$host" "$port" "$pub"
 fi
 echo
-info "Then verify from here (auth + forced command + server launch; EOF makes the server exit 0):"
-info "    ssh $ALIAS </dev/null && echo 'sjmcp server launched OK'"
-info "First connection is slow once — uv resolves the server's deps on the archive host, then caches."
-ok "sjmcp remote configured on '$(sj_host)' → $ALIAS  (activates on the next Claude session)"
+sj_info "Then verify from here (auth + forced command + server launch; EOF makes the server exit 0):"
+sj_info "    ssh $ALIAS </dev/null && echo 'sjmcp server launched OK'"
+sj_info "First connection is slow once — uv resolves the server's deps on the archive host, then caches."
+sj_ok "sjmcp remote configured on '$(sj_host)' → $ALIAS  (activates on the next Claude session)"
