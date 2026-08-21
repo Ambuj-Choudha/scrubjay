@@ -16,10 +16,6 @@ set -uo pipefail
 APP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$APP/bin/lib.sh"; sj_load_config
 
-info() { printf '\033[1;34m›\033[0m %s\n' "$*"; }
-ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m!\033[0m %s\n' "$*" >&2; }
-
 CFGDIR="$HOME/.config/scrubjay"; CFG="$CFGDIR/config"; mkdir -p "$CFGDIR"; touch "$CFG"
 backend="${SCRUBJAY_TRANSCRIPT_BACKEND:-off}"
 mem="$(sj_memory)"
@@ -29,13 +25,13 @@ guser=""; authorize_key=""
 mem_note="its own git repo, self-hosted on the NAS (never GitHub)."
 
 if [ -n "$remote" ]; then
-  ok "memory remote already configured: $remote"
+  sj_ok "memory remote already configured: $remote"
 else
   case "$backend" in
     local)
       # the bare repo lives INSIDE the NAS storage folder, next to the transcript trees
       remote="${MEM_BARE:-${SCRUBJAY_LOCAL_CHATS:-/mnt/nas1/scrubjay-storage}/memory.git}"
-      info "local backend → bare repo on the NAS: $remote"
+      sj_info "local backend → bare repo on the NAS: $remote"
       ;;
     rsync-wg)
       # Client over WG. Git can't reuse the rrsync relay key (forced command), so make a dedicated
@@ -48,24 +44,18 @@ else
       # connection field from the working `scrubjay-receiver` alias — host, port, user AND ProxyJump —
       # and never hand-pick them. (Earlier bugs: defaulting user to $USER reached a nonexistent
       # account; forgetting ProxyJump aimed straight at the LAN IP and timed out.)
-      recv_user="$(ssh -G scrubjay-receiver 2>/dev/null  | awk '/^user /{print $2; exit}')"
-      recv_host="$(ssh -G scrubjay-receiver 2>/dev/null  | awk '/^hostname /{print $2; exit}')"
-      recv_port="$(ssh -G scrubjay-receiver 2>/dev/null  | awk '/^port /{print $2; exit}')"
-      recv_jump="$(ssh -G scrubjay-receiver 2>/dev/null  | awk '/^proxyjump /{print $2; exit}')"
+      recv_user="$(sj_ssh_conf scrubjay-receiver user)"
+      recv_host="$(sj_ssh_conf scrubjay-receiver hostname)"
+      recv_port="$(sj_ssh_conf scrubjay-receiver port)"
+      recv_jump="$(sj_ssh_conf scrubjay-receiver proxyjump)"
       guser="${MEM_GIT_USER:-${recv_user:-$USER}}"
       local_host="${MEM_RECV_HOST:-$recv_host}"
       local_port="${MEM_RECV_PORT:-${recv_port:-22}}"
       jump="${MEM_RECV_JUMP:-$recv_jump}"
-      [ -n "$local_host" ] || { warn "set MEM_RECV_HOST=<receiver host/IP> and re-run"; exit 1; }
-      mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
-      [ -f "$gkey" ] || { ssh-keygen -t ed25519 -N "" -f "$gkey" -C "$(sj_host) memory-git" >/dev/null \
-                            && ok "generated memory-git key: $gkey"; }
-      SSHCFG="$HOME/.ssh/config"; touch "$SSHCFG"; chmod 600 "$SSHCFG"
-      if ! grep -qE '^[Hh]ost[[:space:]]+scrubjay-memory$' "$SSHCFG"; then
-        { echo; echo "Host scrubjay-memory"; echo "    HostName $local_host"; echo "    Port $local_port"
-          echo "    User $guser"; echo "    IdentityFile $gkey"; echo "    IdentitiesOnly yes"
-          [ -n "$jump" ] && [ "$jump" != none ] && echo "    ProxyJump $jump"; } >> "$SSHCFG"
-        ok "ssh alias 'scrubjay-memory' → $guser@$local_host:$local_port${jump:+ via $jump}"
+      [ -n "$local_host" ] || { sj_warn "set MEM_RECV_HOST=<receiver host/IP> and re-run"; exit 1; }
+      sj_ssh_keygen "$gkey" "$(sj_host) memory-git" && sj_ok "generated memory-git key: $gkey"
+      if sj_ssh_alias scrubjay-memory "$local_host" "$local_port" "$guser" "$gkey" "$jump" "IdentitiesOnly yes"; then
+        sj_ok "ssh alias 'scrubjay-memory' → $guser@$local_host:$local_port${jump:+ via $jump}"
       fi
       remote="scrubjay-memory:$gbare"
       authorize_key="$gkey.pub"
@@ -101,32 +91,30 @@ else
         fi
         [ -n "$base" ] && remote="$base/scrubjay-memory.git"
       fi
-      [ -n "$remote" ] || { warn "git backend: create a SEPARATE private scrubjay-memory repo, then set MEM_GIT_REMOTE=git@github.com:<owner>/scrubjay-memory.git and re-run"; exit 0; }
+      [ -n "$remote" ] || { sj_warn "git backend: create a SEPARATE private scrubjay-memory repo, then set MEM_GIT_REMOTE=git@github.com:<owner>/scrubjay-memory.git and re-run"; exit 0; }
       mem_note="its own PRIVATE GitHub repo — holds real filesystem paths, so it's third-party custody (private, but off your hardware)."
-      info "git backend → private GitHub memory repo: $remote"
-      warn "PRIVACY: this stores your memory's real filesystem paths in a PRIVATE GitHub repo (a third party holds them)."
-      warn "For zero third-party custody, self-host on a NAS instead — costs more wiring (a NAS box + WireGuard + DDNS)."
+      sj_info "git backend → private GitHub memory repo: $remote"
+      sj_warn "PRIVACY: this stores your memory's real filesystem paths in a PRIVATE GitHub repo (a third party holds them)."
+      sj_warn "For zero third-party custody, self-host on a NAS instead — costs more wiring (a NAS box + WireGuard + DDNS)."
       # sj-bootstrap.sh --repo scrubjay-memory creates it via `gh`; without gh it must already exist.
       if ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes' \
              sj_timeout 20 git ls-remote "$remote" >/dev/null 2>&1; then
         slug="${remote#git@github.com:}"; slug="${slug%.git}"
-        warn "that repo isn't reachable yet — create it, then re-run:  gh repo create $slug --private"
+        sj_warn "that repo isn't reachable yet — create it, then re-run:  gh repo create $slug --private"
       fi
       ;;
     *)
-      warn "backend '$backend' has no NAS path — set SCRUBJAY_MEMORY_REMOTE manually to enable memory"
+      sj_warn "backend '$backend' has no NAS path — set SCRUBJAY_MEMORY_REMOTE manually to enable memory"
       exit 0
       ;;
   esac
 
   # persist the keys (idempotent: append only if absent; back up first)
-  if ! grep -q SCRUBJAY_MEMORY_REMOTE "$CFG"; then
-    cp "$CFG" "$CFG.bak.$(date +%s)"
-    { echo "# Cross-machine memory: $mem_note"
-      echo ": \"\${SCRUBJAY_MEMORY:=$mem}\""
-      echo ": \"\${SCRUBJAY_MEMORY_REMOTE:=$remote}\""; } >> "$CFG"
-    ok "wrote memory keys to $CFG"
-  fi
+  sj_config_add SCRUBJAY_MEMORY_REMOTE \
+    "# Cross-machine memory: $mem_note" \
+    "$(sj_config_kv SCRUBJAY_MEMORY "$mem")" \
+    "$(sj_config_kv SCRUBJAY_MEMORY_REMOTE "$remote")" \
+    && sj_ok "wrote memory keys to $CFG"
   export SCRUBJAY_MEMORY="$mem" SCRUBJAY_MEMORY_REMOTE="$remote"
 fi
 
@@ -139,8 +127,8 @@ if [ "$backend" = local ] && [ -n "$remote" ]; then
     # clients push over SSH as the relay account (e.g. scrubjay-rx). Group-shared perms + setgid let
     # both write. (The relay account must be in the owner's group; it already is for the relay.)
     mkdir -p "$(dirname "$remote")" && git init -q --bare --shared=group "$remote" \
-      && ok "created bare repo $remote (group-shared)" || warn "could not create bare repo at $remote"
-  else ok "bare repo present: $remote"; fi
+      && sj_ok "created bare repo $remote (group-shared)" || sj_warn "could not create bare repo at $remote"
+  else sj_ok "bare repo present: $remote"; fi
   hook="$remote/hooks/post-receive"
   if [ -d "$remote" ] && [ ! -f "$hook" ]; then
     cat > "$hook" <<'HOOK'
@@ -152,34 +140,34 @@ TARGET="$(dirname "$BARE")/memory"
 mkdir -p "$TARGET"
 git --git-dir="$BARE" --work-tree="$TARGET" checkout -f main 2>/dev/null || true
 HOOK
-    chmod +x "$hook" && ok "installed post-receive hook → browsable copy at $(dirname "$remote")/memory"
+    chmod +x "$hook" && sj_ok "installed post-receive hook → browsable copy at $(dirname "$remote")/memory"
   fi
 fi
 
 # clone/pull, link per-project memory dirs, publish anything migrated in (first run on the NAS box)
-"$APP/bin/memory-sync.sh" pull && ok "memory pulled (clone: $mem)" || warn "memory pull failed — remote reachable?"
-"$APP/bin/claude-sync.sh" >/dev/null 2>&1 && ok "claude-sync applied (memory dirs linked)" || warn "claude-sync failed"
+"$APP/bin/memory-sync.sh" pull && sj_ok "memory pulled (clone: $mem)" || sj_warn "memory pull failed — remote reachable?"
+"$APP/bin/claude-sync.sh" >/dev/null 2>&1 && sj_ok "claude-sync applied (memory dirs linked)" || sj_warn "claude-sync failed"
 "$APP/bin/memory-sync.sh" push >/dev/null 2>&1 || true
 
 if [ -n "$authorize_key" ] && [ -f "$authorize_key" ]; then
   echo
-  info "Final step — authorize this machine for memory-git on the receiver. Copy this host's"
-  info "public key over, then run ON THE RECEIVER, in its scrubjay clone (it writes the forced"
-  info "command for you and appends safely):"
+  sj_info "Final step — authorize this machine for memory-git on the receiver. Copy this host's"
+  sj_info "public key over, then run ON THE RECEIVER, in its scrubjay clone (it writes the forced"
+  sj_info "command for you and appends safely):"
   echo
   echo "    bin/onboard-receiver.sh --authorize memory <this-host.pub>"
   echo
-  info "By hand instead — add ONE line to the '$guser' user's ~/.ssh/authorized_keys on the"
-  info "receiver (restricts the key to git only):"
+  sj_info "By hand instead — add ONE line to the '$guser' user's ~/.ssh/authorized_keys on the"
+  sj_info "receiver (restricts the key to git only):"
   echo
   printf '    command="git-shell -c \\"$SSH_ORIGINAL_COMMAND\\"",restrict %s\n' "$(cat "$authorize_key")"
   echo
-  info "git-shell must be installed on the receiver; then verify here:  bin/memory-sync.sh pull"
+  sj_info "git-shell must be installed on the receiver; then verify here:  bin/memory-sync.sh pull"
   # The clone above could not succeed yet (that is what this key unlocks), so memory-sync fell back
   # to a local repo whose commits have nowhere to go. Record the wait: SessionStart will detect the
   # authorization and publish what accumulated, rather than leaving it stranded until someone
   # notices. This is the exact state that stranded a host for three weeks.
   sj_record_pending memory git "$remote"
-  info "(Recorded as pending — a future session will publish automatically once authorized.)"
+  sj_info "(Recorded as pending — a future session will publish automatically once authorized.)"
 fi
-ok "cross-machine memory ready on '$(sj_host)'"
+sj_ok "cross-machine memory ready on '$(sj_host)'"

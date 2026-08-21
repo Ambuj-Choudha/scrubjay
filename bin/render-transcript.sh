@@ -11,13 +11,13 @@
 #   usage: render-transcript.sh <transcript.jsonl>   > out.md
 set -uo pipefail
 src="${1:?usage: render-transcript.sh <transcript.jsonl>}"
+BIN="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # bin/render.jq: the shared Markdown shape
 command -v jq >/dev/null 2>&1 || { echo "(jq unavailable — cannot render $src)"; exit 0; }
 [ -f "$src" ] || { echo "(transcript not found: $src)"; exit 0; }
 
-jq -rs '
-  def hdr($r): if $r=="user" then "## User" else "## Assistant" end;
+jq -rs -L "$BIN" '
+  include "render";   # hdr/2 fence/2 document/2 — shared with the opencode and codex renderers
   def keepstr($s): ($s|type)=="string" and ((($s|startswith("<")) or ($s|startswith("Caveat"))) | not);
-  def fence($lang; $body): "```" + $lang + "\n" + ($body|rtrimstr("\n")) + "\n```";
   # a tool_use call: name + its input (Bash command verbatim, else compact JSON)
   def render_call(u):
     "**→ " + (u.name // "tool") + "**\n\n"
@@ -48,18 +48,7 @@ jq -rs '
         | (if ($t|gsub("\\s";"")) != "" then {role:"assistant", text:$t} else empty end)
       else empty end
   ] as $turns
-  | ([ $turns[] | select(.role=="user") | .text ][0] // "(no prompt)") as $topic
-  | ($topic | gsub("\\s+";" ") | .[0:80]) as $title
-  # count the rendered blocks, not the pre-merge records: consecutive same-role turns and folded
-  # tool output collapse into one block, and that block count is what sjmcp reports as session size.
-  | ( reduce $turns[] as $f ( {out:[], last:""};
-        if $f.role == .last
-        then .out[-1] += "\n\n" + $f.text
-        else .out += [ "\n" + hdr($f.role) + "\n\n" + $f.text ] | .last = $f.role
-        end )
-      | .out ) as $blocks
-  | "# " + $title + "\n\n_" + ($blocks | length | tostring) + " turns_\n"
-    + ( $blocks | join("") )
+  | document($turns; "(no prompt)")
 ' "$src" | tr -d '\000'
 # `tr -d '\000'`: captured terminal output can carry a NUL — /proc/device-tree/* strings are
 # NUL-terminated — and the transcript stores it as the escape \u0000, which jq faithfully

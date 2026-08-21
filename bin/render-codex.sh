@@ -23,12 +23,12 @@
 # and bookkeeping, the same cut the Claude renderer makes.
 set -uo pipefail
 src="${1:?usage: render-codex.sh <rollout.jsonl>}"
+BIN="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # bin/render.jq: the shared Markdown shape
 command -v jq >/dev/null 2>&1 || { echo "(jq unavailable — cannot render $src)"; exit 0; }
 [ -f "$src" ] || { echo "(rollout not found: $src)"; exit 0; }
 
-jq -rs '
-  def hdr($r): if $r == "user" then "## User" else "## Assistant" end;
-  def fence($lang; $body): "```" + $lang + "\n" + ($body | rtrimstr("\n")) + "\n```";
+jq -rs -L "$BIN" '
+  include "render";   # hdr/2 fence/2 document/2 — shared with the Claude and opencode renderers
 
   # codex runs shell tools as {"command": ["bash", "-lc", "<script>"], …} — show the script itself,
   # not the argv wrapper, so a rendered codex session reads like a rendered Claude one.
@@ -77,17 +77,7 @@ jq -rs '
          | {role: "assistant", text: ("**⎿ output:**\n\n" + fence("text"; .))})
       else empty end
   ] as $turns
-  | ([ $turns[] | select(.role == "user") | .text ][0] // "(no prompt)") as $topic
-  | ($topic | gsub("\\s+"; " ") | .[0:80]) as $title
-  # count the rendered blocks, not the pre-merge records — same shape/semantics as the other renderers.
-  | ( reduce $turns[] as $f ( {out: [], last: ""};
-        if $f.role == .last
-        then .out[-1] += "\n\n" + $f.text
-        else .out += [ "\n" + hdr($f.role) + "\n\n" + $f.text ] | .last = $f.role
-        end )
-      | .out ) as $blocks
-  | "# " + $title + "\n\n_" + ($blocks | length | tostring) + " turns_\n"
-    + ( $blocks | join("") )
+  | document($turns; "(no prompt)")
 ' "$src" | tr -d '\000'
 # One NUL byte from captured output would make rg/grep treat this rendering as binary and skip it
 # in a recursive search, dropping the session out of /sjrecall. See render-transcript.sh and #66.

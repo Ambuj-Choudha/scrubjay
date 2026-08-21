@@ -20,6 +20,7 @@
 # dropped, matching the Claude renderer's treatment of thinking and meta records.
 set -uo pipefail
 src="${1:?usage: render-opencode.sh <export.json>}"
+BIN="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # bin/render.jq: the shared Markdown shape
 command -v jq >/dev/null 2>&1 || { echo "(jq unavailable — cannot render $src)"; exit 0; }
 [ -f "$src" ] || { echo "(export not found: $src)"; exit 0; }
 # A zero-byte export means `opencode export` FAILED — say so rather than rendering it as a session
@@ -30,9 +31,8 @@ command -v jq >/dev/null 2>&1 || { echo "(jq unavailable — cannot render $src)
 # genuinely empty session, and missing the `_N turns_` line mcp/sjmcp_server.py reads.
 [ -s "$src" ] || { echo "(export empty — opencode export produced nothing: $src)"; exit 0; }
 
-jq -r '
-  def hdr($r): if $r == "user" then "## User" else "## Assistant" end;
-  def fence($lang; $body): "```" + $lang + "\n" + ($body | rtrimstr("\n")) + "\n```";
+jq -r -L "$BIN" '
+  include "render";   # hdr/2 fence/2 document/2 — shared with the Claude and codex renderers
 
   # a tool part: name + input (a shell command verbatim, anything else as JSON), then its output
   def render_tool(p):
@@ -56,17 +56,8 @@ jq -r '
     | select(($t | gsub("\\s"; "")) != "")
     | {role: $role, text: $t}
   ] as $turns
-  | ( [ $turns[] | select(.role == "user") | .text ][0] // .info.title // "(no prompt)" ) as $topic
-  | ($topic | gsub("\\s+"; " ") | .[0:80]) as $title
-  # count the rendered blocks, not the pre-merge records — same shape/semantics as the other renderers.
-  | ( reduce $turns[] as $f ( {out: [], last: ""};
-        if $f.role == .last
-        then .out[-1] += "\n\n" + $f.text
-        else .out += [ "\n" + hdr($f.role) + "\n\n" + $f.text ] | .last = $f.role
-        end )
-      | .out ) as $blocks
-  | "# " + $title + "\n\n_" + ($blocks | length | tostring) + " turns_\n"
-    + ( $blocks | join("") )
+  # opencode records a title of its own, so an export with no user turn is still nameable.
+  | document($turns; (.info.title // "(no prompt)"))
 ' "$src" | tr -d '\000'
 # One NUL byte from captured output would make rg/grep treat this rendering as binary and skip it
 # in a recursive search, dropping the session out of /sjrecall. See render-transcript.sh and #66.

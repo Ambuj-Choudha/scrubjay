@@ -30,9 +30,7 @@ APP="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$APP/bin/lib.sh"; sj_load_config
 
 # UI on stderr so stdout carries ONLY the path — `f=$(sj-paste.sh)` has to be usable.
-info() { printf '\033[1;34m›\033[0m %s\n' "$*" >&2; }
-ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+SJ_UI_STREAM=2
 
 # ── pure helpers (no clipboard, no filesystem — the tested seam) ───────────────────────────────
 
@@ -129,7 +127,7 @@ while [ $# -gt 0 ]; do
     --dir)  ACTION="dir" ;;
     --list) ACTION="list" ;;
     -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
-    *) die "unknown argument '$1' (try --help)" ;;
+    *) sj_die "unknown argument '$1' (try --help)" ;;
   esac
   shift
 done
@@ -140,17 +138,17 @@ DIR="${SCRUBJAY_ASSETS:-$HOME/.scrubjay/assets}/$slug"
 
 case "$ACTION" in
   dir)  printf '%s\n' "$DIR"; exit 0 ;;
-  list) [ -d "$DIR" ] || { info "no assets yet for this project"; exit 0; }
+  list) [ -d "$DIR" ] || { sj_info "no assets yet for this project"; exit 0; }
         sj_ls_by_mtime "$DIR" '*' 1 2>/dev/null | head -20; exit 0 ;;
 esac
 
-mkdir -p "$DIR" 2>/dev/null || die "cannot create $DIR"
-tmp="$(mktemp)" || die "mktemp failed"
+mkdir -p "$DIR" 2>/dev/null || sj_die "cannot create $DIR"
+tmp="$(mktemp)" || sj_die "mktemp failed"
 trap 'rm -f "$tmp"' EXIT
 
 if [ "$FROM_STDIN" = 1 ]; then
   cat > "$tmp"; type="application/octet-stream"
-  [ -s "$tmp" ] || die "nothing on stdin"
+  [ -s "$tmp" ] || sj_die "nothing on stdin"
   # Sniff the two cases that matter, so `cat shot.png | sj-paste -` gets a .png not a .bin.
   case "$(head -c4 "$tmp" | od -An -tx1 | tr -d ' \n')" in
     89504e47) type=image/png ;; ffd8ff*) type=image/jpeg ;; 25504446) type=application/pdf ;;
@@ -160,12 +158,12 @@ else
   prov="$(sjp_provider)"
   [ "$prov" != none ] && ! [ "$prov" = fake ] && [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] \
     && case "$prov" in wl|xclip|xsel) prov=none ;; esac
-  [ "$prov" = none ] && die "no clipboard here (headless or over SSH?). Pipe a file instead:  cat file | $(basename "$0") -"
+  [ "$prov" = none ] && sj_die "no clipboard here (headless or over SSH?). Pipe a file instead:  cat file | $(basename "$0") -"
   types="$(sjp_types "$prov")"
-  [ -n "$types" ] || die "clipboard is empty"
+  [ -n "$types" ] || sj_die "clipboard is empty"
   type="$(printf '%s\n' "$types" | sjp_best_type)"
   sjp_read "$prov" "$type" > "$tmp"
-  [ -s "$tmp" ] || die "clipboard is empty (offered '$type' but returned nothing)"
+  [ -s "$tmp" ] || sj_die "clipboard is empty (offered '$type' but returned nothing)"
 fi
 
 # A copied FILE arrives as a uri-list (or, from some apps, a plain path) — copy the real file
@@ -180,14 +178,14 @@ esac
 if [ -n "$src" ] && [ -f "$src" ]; then
   ext="${src##*.}"; [ "$ext" = "$src" ] && ext=bin
   out="$DIR/$(sjp_filename "${NAME:-$(basename "${src%.*}")}" "$ext")"
-  cp -- "$src" "$out" || die "could not copy $src"
+  cp -- "$src" "$out" || sj_die "could not copy $src"
 else
   out="$DIR/$(sjp_filename "${NAME:-clip}" "$(sjp_ext_for_type "$type")")"
-  cp -- "$tmp" "$out" || die "could not write $out"
+  cp -- "$tmp" "$out" || sj_die "could not write $out"
 fi
 chmod 600 "$out" 2>/dev/null || true      # assets can be anything; don't widen by default
 
 bytes="$(sj_size "$out" 2>/dev/null || echo 0)"
-ok "$type · $((bytes / 1024)) KiB"
-[ "$bytes" -gt 26214400 ] && info "that is >25 MiB — assets are machine-local and never pruned automatically"
+sj_ok "$type · $((bytes / 1024)) KiB"
+[ "$bytes" -gt 26214400 ] && sj_info "that is >25 MiB — assets are machine-local and never pruned automatically"
 printf '%s\n' "$out"

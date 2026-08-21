@@ -20,11 +20,10 @@
 # Sourcing with SCRUBJAY_SNAP_LIB=1 defines the functions without running.
 set -uo pipefail
 
-info() { printf '\033[1;34m›\033[0m %s\n' "$*" >&2; }
-ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*" >&2; }
-warn() { printf '\033[1;33m!\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
-have() { command -v "$1" >/dev/null 2>&1; }
+# No APP variable: this file is also sourced as a library (SCRUBJAY_SNAP_LIB=1), and a sourced
+# script must not overwrite a name in its caller's shell.
+. "$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin/lib.sh"
+SJ_UI_STREAM=2   # stdout stays clean for callers that capture it
 
 # ── pure helpers (no side effects — the tested seam) ──────────────────────────────────────────
 
@@ -95,21 +94,21 @@ while [ $# -gt 0 ]; do
     --oncalendar) ONCAL="${2:?}"; shift;;
     --dry-run)    DRY=1;;
     -h|--help)    awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "${BASH_SOURCE[0]}"; exit 0;;
-    *)            die "unknown argument '$1' (see --help)";;
+    *)            sj_die "unknown argument '$1' (see --help)";;
   esac
   shift
 done
-[ -n "$ACTION" ] || die "nothing to do — pass --now, --schedule, --list or --restore (see --help)."
+[ -n "$ACTION" ] || sj_die "nothing to do — pass --now, --schedule, --list or --restore (see --help)."
 
 run() { if [ "$DRY" = 1 ]; then printf '  + %s\n' "$*" >&2; else eval "$*"; fi; }
 
 FS="$(sjs_detect_fs "$PATH_STORAGE")"
 if [ "$FS" = none ]; then
-  warn "$PATH_STORAGE is not on zfs or btrfs — filesystem snapshots aren't available here."
-  info "options: put scrubjay-storage on a btrfs subvolume or zfs dataset, or use LVM snapshots / restic."
+  sj_warn "$PATH_STORAGE is not on zfs or btrfs — filesystem snapshots aren't available here."
+  sj_info "options: put scrubjay-storage on a btrfs subvolume or zfs dataset, or use LVM snapshots / restic."
   exit 1
 fi
-[ "$DRY" = 1 ] || [ "$(id -u)" = 0 ] || warn "not root — zfs/btrfs operations will likely fail. Re-run with sudo on the NAS."
+[ "$DRY" = 1 ] || [ "$(id -u)" = 0 ] || sj_warn "not root — zfs/btrfs operations will likely fail. Re-run with sudo on the NAS."
 
 # Resolve the fs object once (dataset for zfs, subvolume dir for btrfs).
 DATASET="$(findmnt -n -o SOURCE --target "$PATH_STORAGE" 2>/dev/null)"   # zfs: pool/dataset
@@ -124,7 +123,7 @@ case "$ACTION" in
       run "mkdir -p $SNAPDIR"
       run "$(sjs_btrfs_snap_cmd "$PATH_STORAGE" "$SNAPDIR" "$name")"
     fi
-    ok "snapshot $name ($FS)"
+    sj_ok "snapshot $name ($FS)"
     # prune to --keep
     if [ "$FS" = zfs ]; then
       to_del="$(zfs list -H -t snapshot -o name 2>/dev/null | grep -F "$DATASET@" | sjs_prune_list "$KEEP")"
@@ -133,32 +132,32 @@ case "$ACTION" in
       to_del="$(ls -1 "$SNAPDIR" 2>/dev/null | sjs_prune_list "$KEEP")"
       for s in $to_del; do run "btrfs subvolume delete $SNAPDIR/$s"; done
     fi
-    [ -n "${to_del:-}" ] && ok "pruned to newest $KEEP" || true
+    [ -n "${to_del:-}" ] && sj_ok "pruned to newest $KEEP" || true
     ;;
   schedule)
-    have systemctl || die "no systemctl — install a cron job calling '$SELF --now' instead."
+    sj_has systemctl || sj_die "no systemctl — install a cron job calling '$SELF --now' instead."
     svc=/etc/systemd/system/scrubjay-snapshot.service
     tmr=/etc/systemd/system/scrubjay-snapshot.timer
     run "printf '%s' \"\$(sjs_service_text '$SELF' '$PATH_STORAGE' '$KEEP')\" > $svc"
     run "printf '%s' \"\$(sjs_timer_text '$ONCAL')\" > $tmr"
     run "systemctl daemon-reload"
     run "systemctl enable --now scrubjay-snapshot.timer"
-    ok "scheduled: $ONCAL, keep $KEEP → $tmr"
+    sj_ok "scheduled: $ONCAL, keep $KEEP → $tmr"
     ;;
   list)
     if [ "$FS" = zfs ]; then
-      zfs list -t snapshot -o name,creation 2>/dev/null | grep -F "$DATASET@" || info "no snapshots yet"
+      zfs list -t snapshot -o name,creation 2>/dev/null | grep -F "$DATASET@" || sj_info "no snapshots yet"
     else
       # basename-only listing. `find -printf '%f\n'` would be shorter but is a GNU extension that
       # BSD find lacks outright — and this script also runs on a non-Linux NAS.
       snaps="$(find "$SNAPDIR" -maxdepth 1 -name 'scrubjay-[0-9]*' 2>/dev/null \
                | while IFS= read -r s; do basename "$s"; done | sort)"
-      [ -n "$snaps" ] && printf '%s\n' "$snaps" || info "no snapshots yet"
+      [ -n "$snaps" ] && printf '%s\n' "$snaps" || sj_info "no snapshots yet"
     fi
     ;;
   restore)
     # Restore is destructive and filesystem-specific — PRINT the exact commands, never run them.
-    warn "restore is destructive; review, then run these yourself with root on the NAS:"
+    sj_warn "restore is destructive; review, then run these yourself with root on the NAS:"
     if [ "$FS" = zfs ]; then
       cat >&2 <<EOF
     # roll the dataset back to the snapshot (discards everything written since it):
@@ -176,5 +175,5 @@ EOF
     ;;
 esac
 
-info "note: snapshots share the disk with the archive — they are not an off-box backup. For"
-info "disk-failure protection, replicate them (zfs send | ssh, btrbk, or restic)."
+sj_info "note: snapshots share the disk with the archive — they are not an off-box backup. For"
+sj_info "disk-failure protection, replicate them (zfs send | ssh, btrbk, or restic)."

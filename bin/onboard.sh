@@ -22,11 +22,6 @@ APP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$APP/bin/lib.sh"   # sj_version / sj_is_clone (function definitions only; no side effects)
 
 # ---- pretty output + prompt helpers ---------------------------------------------------
-info() { printf '\033[1;34m›\033[0m %s\n' "$*"; }
-ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m!\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
-have() { command -v "$1" >/dev/null 2>&1; }
 
 ask() {  # ask VARNAME "prompt" "default"   (keeps an existing env value; falls back to default)
   local __var="$1" __prompt="$2" __def="${3:-}" __cur="" __ans="" __disp=""
@@ -49,45 +44,45 @@ case "${1:-}" in
   -v|--version) echo "scrubjay $(sj_version)"; exit 0;;
 esac
 
-echo; info "scrubjay onboarding  (app: $(sj_pretty_path "$APP"), version: $(sj_version))"
+echo; sj_info "scrubjay onboarding  (app: $(sj_pretty_path "$APP"), version: $(sj_version))"
 
 # ---- 1) dependencies ------------------------------------------------------------------
-have git || die "git not found — install it first (e.g. sudo apt install git)."
-have jq  || die "jq not found — install it first (e.g. sudo apt install jq)."
+sj_has git || sj_die "git not found — install it first (e.g. sudo apt install git)."
+sj_has jq  || sj_die "jq not found — install it first (e.g. sudo apt install jq)."
 # `have` (PATH-only) can't tell "not installed" from "installed but this shell's PATH doesn't
 # include it" — e.g. the official installer's default ~/.local/bin isn't on PATH in a fresh
 # zsh setup. Check the installer's known locations before concluding it's missing.
 CLAUDE_BIN=""
-if have claude; then CLAUDE_BIN="$(command -v claude)"
+if sj_has claude; then CLAUDE_BIN="$(command -v claude)"
 else
   for _c in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude"; do
     [ -x "$_c" ] && CLAUDE_BIN="$_c" && break
   done
 fi
 if [ -n "$CLAUDE_BIN" ]; then
-  ok "Claude Code present ($(sj_pretty_path "$CLAUDE_BIN"))"
+  sj_ok "Claude Code present ($(sj_pretty_path "$CLAUDE_BIN"))"
   CLAUDE_BINDIR="$(dirname "$CLAUDE_BIN")"
   case ":$PATH:" in
     *":$CLAUDE_BINDIR:"*) ;;
-    *) warn "found at $(sj_pretty_path "$CLAUDE_BIN") but $(sj_pretty_path "$CLAUDE_BINDIR") isn't on PATH for this shell — add it to your shell rc." ;;
+    *) sj_warn "found at $(sj_pretty_path "$CLAUDE_BIN") but $(sj_pretty_path "$CLAUDE_BINDIR") isn't on PATH for this shell — add it to your shell rc." ;;
   esac
 else
-  warn "Claude Code ('claude') not found."
+  sj_warn "Claude Code ('claude') not found."
   if confirm "Install it now via the official installer?" Y; then
     curl -fsSL https://claude.ai/install.sh | bash \
-      && ok "Claude installed (you may need to reopen your shell so 'claude' is on PATH)" \
-      || warn "Claude install reported an error — continuing; install it manually later."
+      && sj_ok "Claude installed (you may need to reopen your shell so 'claude' is on PATH)" \
+      || sj_warn "Claude install reported an error — continuing; install it manually later."
   fi
 fi
 # uv runs the sjmcp archive server (mcp/sjmcp_server.py via `uv run --script`). Only the box that
 # serves the archive strictly needs it, but check+offer here so claude-sync can wire MCP in one go.
-if have uv; then ok "uv present ($(command -v uv))"
+if sj_has uv; then sj_ok "uv present ($(command -v uv))"
 else
-  warn "uv not found — the sjmcp MCP server (/sjrecall, /sjfind, /sjbrowse) won't register without it."
+  sj_warn "uv not found — the sjmcp MCP server (/sjrecall, /sjfind, /sjbrowse) won't register without it."
   if confirm "Install it now via the official installer?" Y; then
     curl -LsSf https://astral.sh/uv/install.sh | sh \
-      && ok "uv installed (you may need to reopen your shell so 'uv' is on PATH)" \
-      || warn "uv install reported an error — continuing; install it manually later."
+      && sj_ok "uv installed (you may need to reopen your shell so 'uv' is on PATH)" \
+      || sj_warn "uv install reported an error — continuing; install it manually later."
   fi
 fi
 
@@ -102,23 +97,23 @@ if [ -z "${SCRUBJAY_HARNESSES:-}" ]; then
     sj_adapter_call "$_h" sjh_present 2>/dev/null && detected="${detected:+$detected }$_h"
   done
   [ -n "$detected" ] || detected="claude"          # nothing on PATH yet → the reference harness
-  [ "$detected" = "claude" ] || info "harnesses detected on PATH: $detected"
+  [ "$detected" = "claude" ] || sj_info "harnesses detected on PATH: $detected"
   ask SCRUBJAY_HARNESSES "coding harnesses to sync config into (space-separated)" "$detected"
 fi
 export SCRUBJAY_HARNESSES
-ok "harnesses: $SCRUBJAY_HARNESSES"
+sj_ok "harnesses: $SCRUBJAY_HARNESSES"
 
 # ---- 2) where the repos live + who owns YOUR private data repos -----------------------
 # Deliberately NOT inferred from this clone's origin. The app repo is public and you may run it
 # straight from upstream; your content lives in private repos under your OWN account. Keeping the
 # two apart is what makes forking unnecessary (and stops a fresh clone from reaching for the
 # maintainer's private repos). sj-bootstrap.sh creates + seeds them.
-sj_is_clone || warn "this app dir has no .git — self-update won't work; install via 'git clone', not a source tarball."
+sj_is_clone || sj_warn "this app dir has no .git — self-update won't work; install via 'git clone', not a source tarball."
 DEFAULT_OWNER="${SCRUBJAY_OWNER:-$(command -v gh >/dev/null 2>&1 && gh api user --jq .login 2>/dev/null)}"
 ask SCRUBJAY_OWNER "GitHub account for your PRIVATE data repos" "${DEFAULT_OWNER:-}"
-[ -n "$SCRUBJAY_OWNER" ] || die "no GitHub account given — set SCRUBJAY_OWNER=<your-gh-user>"
+[ -n "$SCRUBJAY_OWNER" ] || sj_die "no GitHub account given — set SCRUBJAY_OWNER=<your-gh-user>"
 export SCRUBJAY_OWNER
-ok "private repos owner: $SCRUBJAY_OWNER"
+sj_ok "private repos owner: $SCRUBJAY_OWNER"
 
 DEFAULT_BASE="$(dirname "$APP")"                # siblings of the app clone
 ask BASE "clone base dir for the data repos" "$DEFAULT_BASE"
@@ -129,7 +124,7 @@ CHATS_DIR="$BASE/scrubjay-chats"
 
 # ---- 3) backend choice ----------------------------------------------------------------
 if [ -z "${SCRUBJAY_BACKEND:-}" ]; then
-  echo; info "Session-relay backend — where each session's records go (pick one):"
+  echo; sj_info "Session-relay backend — where each session's records go (pick one):"
   echo "    1) rsync-wg  peer-to-peer to your own NAS over WireGuard — records stay off third parties; needs a NAS"
   echo "    2) local     the archive is a directory this box writes straight into, no network hop —"
   echo "                 a NAS share mounted here, or this box's own disk (then THIS box is the store)"
@@ -139,12 +134,12 @@ if [ -z "${SCRUBJAY_BACKEND:-}" ]; then
   case "$BACKEND_CHOICE" in
     1) SCRUBJAY_BACKEND=rsync-wg;; 2) SCRUBJAY_BACKEND=local;;
     3) SCRUBJAY_BACKEND=git;;      4) SCRUBJAY_BACKEND=off;;
-    "") die "no backend chosen — pick 1-4, or preset SCRUBJAY_BACKEND (rsync-wg|local|git|off)";;
-    *)  die "invalid choice '$BACKEND_CHOICE'";;
+    "") sj_die "no backend chosen — pick 1-4, or preset SCRUBJAY_BACKEND (rsync-wg|local|git|off)";;
+    *)  sj_die "invalid choice '$BACKEND_CHOICE'";;
   esac
 fi
 BACKEND="$SCRUBJAY_BACKEND"
-ok "backend: $BACKEND"
+sj_ok "backend: $BACKEND"
 
 # backend-specific settings
 WG_TARGET=""; WG_KEY=""; LOCAL_CHATS=""; RECV_HOST=""; RECV_USER=""; RECV_PORT=""; RECV_PATH=""; GEN_KEY=0
@@ -154,8 +149,8 @@ case "$BACKEND" in
     # provisions that box (archive root, per-role authorized_keys, dependency report) and prints the
     # privileged leftovers rather than applying them. Say so here — asking for a "receiver rrsync root"
     # implies the box is already set up, which is how testers concluded scrubjay didn't cover it.
-    info "This needs an archive host. If you haven't set one up: clone scrubjay on that box and run"
-    info "bin/onboard-receiver.sh there — it provisions it and prints the root-level steps for you."
+    sj_info "This needs an archive host. If you haven't set one up: clone scrubjay on that box and run"
+    sj_info "bin/onboard-receiver.sh there — it provisions it and prints the root-level steps for you."
     ask RECV_USER "receiver SSH user" "scrubjay-rx"
     ask RECV_HOST "receiver host/IP (reachable over WG/LAN)" "192.168.1.10"
     ask RECV_PORT "receiver SSH port" "22"
@@ -174,7 +169,7 @@ case "$BACKEND" in
     # SCRUBJAY_NAS_SERVER (+ SCRUBJAY_ASSUME_YES=1 so it installs the mount without prompting).
     # The share is usually not scrubjay's alone, so the archive directory is named, not assumed.
     if [ -n "${SCRUBJAY_NAS_SERVER:-}" ] \
-       || { echo; info "The archive needs a writable directory on this box. If one already exists" \
+       || { echo; sj_info "The archive needs a writable directory on this box. If one already exists" \
                        "(a mounted share, or just a local path), answer no to the next question."; \
             confirm "mount a share your NAS already serves? (this does NOT set up a NAS)" N; }; then
       ask SCRUBJAY_NAS_PROTO      "protocol that share is served over (nfs|cifs)" "nfs"
@@ -185,7 +180,7 @@ case "$BACKEND" in
       export SCRUBJAY_NAS_PROTO SCRUBJAY_NAS_SERVER SCRUBJAY_NAS_EXPORT SCRUBJAY_NAS_MOUNTPOINT \
              SCRUBJAY_STORAGE_DIR
       LOCAL_CHATS="$("$APP/bin/sj-mount.sh")" \
-        || die "NAS mount setup failed — mount it by hand, then re-run bin/onboard.sh."
+        || sj_die "NAS mount setup failed — mount it by hand, then re-run bin/onboard.sh."
     else
       ask LOCAL_CHATS "archive dir (existing mount, or a path on this box's disk)" \
         "/mnt/nas1/${SCRUBJAY_STORAGE_DIR:-scrubjay-storage}"
@@ -199,39 +194,35 @@ esac
 # settings/settings.base.json, and that file is where the SessionStart/SessionEnd hooks live.
 mkdir -p "$BASE"
 SCRUBJAY_BACKEND="$BACKEND" BASE="$BASE" "$APP/bin/sj-bootstrap.sh" \
-  || die "bootstrap failed — create the private repo(s) it named, then re-run bin/onboard.sh"
+  || sj_die "bootstrap failed — create the private repo(s) it named, then re-run bin/onboard.sh"
 
 # ---- 5) write the machine-local pointer ----------------------------------------------
 CFGDIR="$HOME/.config/scrubjay"; CFG="$CFGDIR/config"; mkdir -p "$CFGDIR"
 if [ -f "$CFG" ] && ! confirm "overwrite existing $CFG?" N; then
-  warn "keeping existing $CFG (review it matches the choices above)"
+  sj_warn "keeping existing $CFG (review it matches the choices above)"
 else
   [ -f "$CFG" ] && cp "$CFG" "$CFG.bak.$(date +%s)"
   {
-    echo ": \"\${SCRUBJAY_DATA:=$DATA_DIR}\""
-    echo ": \"\${SCRUBJAY_CHATS:=$CHATS_DIR}\""
-    echo ": \"\${SCRUBJAY_HARNESSES:=$SCRUBJAY_HARNESSES}\""
-    echo ": \"\${SCRUBJAY_TRANSCRIPT_BACKEND:=$BACKEND}\""
-    [ "$BACKEND" = local ]    && echo ": \"\${SCRUBJAY_LOCAL_CHATS:=$LOCAL_CHATS}\""
-    [ "$BACKEND" = rsync-wg ] && { echo ": \"\${SCRUBJAY_WG_TARGET:=$WG_TARGET}\""
-                                   echo ": \"\${SCRUBJAY_WG_SSHKEY:=$WG_KEY}\""; }
+    sj_config_kv SCRUBJAY_DATA "$DATA_DIR"
+    sj_config_kv SCRUBJAY_CHATS "$CHATS_DIR"
+    sj_config_kv SCRUBJAY_HARNESSES "$SCRUBJAY_HARNESSES"
+    sj_config_kv SCRUBJAY_TRANSCRIPT_BACKEND "$BACKEND"
+    [ "$BACKEND" = local ]    && sj_config_kv SCRUBJAY_LOCAL_CHATS "$LOCAL_CHATS"
+    [ "$BACKEND" = rsync-wg ] && { sj_config_kv SCRUBJAY_WG_TARGET "$WG_TARGET"
+                                   sj_config_kv SCRUBJAY_WG_SSHKEY "$WG_KEY"; }
   } > "$CFG"
-  ok "wrote $(sj_pretty_path "$CFG")"
+  sj_ok "wrote $(sj_pretty_path "$CFG")"
 fi
 
 # ---- 6) generate relay key + ssh alias (rsync-wg) ------------------------------------
 if [ "$GEN_KEY" = 1 ]; then
-  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
-  if [ -f "$WG_KEY" ]; then ok "relay key already exists ($(sj_pretty_path "$WG_KEY"))"
-  else ssh-keygen -t ed25519 -N "" -f "$WG_KEY" -C "$HOST transcripts" && ok "generated $(sj_pretty_path "$WG_KEY")"; fi
-  SSHCFG="$HOME/.ssh/config"; touch "$SSHCFG"; chmod 600 "$SSHCFG"
-  if grep -qE '^[Hh]ost[[:space:]]+scrubjay-receiver$' "$SSHCFG"; then
-    ok "ssh alias 'scrubjay-receiver' already present"
+  if sj_ssh_keygen "$WG_KEY" "$HOST transcripts"; then sj_ok "generated $(sj_pretty_path "$WG_KEY")"
+  elif [ -f "$WG_KEY" ];                          then sj_ok "relay key already exists ($(sj_pretty_path "$WG_KEY"))"
+  else sj_warn "could not generate $(sj_pretty_path "$WG_KEY") — run ssh-keygen by hand, then re-run"; fi
+  if sj_ssh_alias scrubjay-receiver "$RECV_HOST" "$RECV_PORT" "$RECV_USER" "$WG_KEY" ""; then
+    sj_ok "added ssh alias 'scrubjay-receiver' → $RECV_USER@$RECV_HOST:$RECV_PORT"
   else
-    { echo; echo "Host scrubjay-receiver"; echo "    HostName $RECV_HOST"
-      echo "    Port $RECV_PORT"; echo "    User $RECV_USER"
-      echo "    IdentityFile $WG_KEY"; } >> "$SSHCFG"
-    ok "added ssh alias 'scrubjay-receiver' → $RECV_USER@$RECV_HOST:$RECV_PORT"
+    sj_ok "ssh alias 'scrubjay-receiver' already present"
   fi
 fi
 
@@ -240,11 +231,11 @@ fi
 # Claude, the opencode.json/agents/commands merge for opencode). The Claude host dir is a
 # hard requirement of claude-sync.sh, so register it only when Claude is actually selected.
 export CLAUDE_HOST="$HOST"
-info "registering host '$HOST' and applying config into: $SCRUBJAY_HARNESSES …"
+sj_info "registering host '$HOST' and applying config into: $SCRUBJAY_HARNESSES …"
 case " $SCRUBJAY_HARNESSES " in
-  *" claude "*) "$APP/bin/claude-register-host.sh" --host "$HOST" || die "host registration failed" ;;
+  *" claude "*) "$APP/bin/claude-register-host.sh" --host "$HOST" || sj_die "host registration failed" ;;
 esac
-"$APP/bin/sync-config.sh" --host "$HOST" || die "sync-config failed"
+"$APP/bin/sync-config.sh" --host "$HOST" || sj_die "sync-config failed"
 
 # ---- 7b) cross-machine memory ---------------------------------------------------------
 # Its own git repo, hosted the same way you host transcripts: self-hosted on the NAS for the
@@ -255,7 +246,7 @@ if [ "$BACKEND" = git ]; then mem_where="a private GitHub repo (holds real files
 else mem_where="its own self-hosted NAS git repo"; fi
 if confirm "set up cross-machine memory ($mem_where)?" Y; then
   MEM_RECV_HOST="${RECV_HOST:-}" MEM_RECV_PORT="${RECV_PORT:-22}" \
-    "$APP/bin/onboard-memory.sh" || warn "memory onboarding had issues — see docs/memory-sync.md"
+    "$APP/bin/onboard-memory.sh" || sj_warn "memory onboarding had issues — see docs/memory-sync.md"
 fi
 
 # ---- 7c) MCP remote: a client with no local archive queries the archive host over SSH -
@@ -264,7 +255,7 @@ if [ "$BACKEND" != local ]; then
   if confirm "set up archive querying over MCP (/sjrecall, /sjfind, /sjbrowse against the archive host)?" Y; then
     ask MCP_USER "owner account ON THE ARCHIVE HOST (the one with uv + the scrubjay clone)" "${MCP_USER:-$USER}"
     MCP_USER="$MCP_USER" MCP_RECV_HOST="${RECV_HOST:-}" MCP_RECV_PORT="${RECV_PORT:-22}" \
-      "$APP/bin/onboard-mcp-client.sh" || warn "MCP-client onboarding had issues — see the README 'Query the archive (MCP)' section"
+      "$APP/bin/onboard-mcp-client.sh" || sj_warn "MCP-client onboarding had issues — see the README 'Query the archive (MCP)' section"
   fi
 fi
 
@@ -272,7 +263,7 @@ fi
 if confirm "commit + push the new hosts/$HOST entry to scrubjay-data?" Y; then
   ( cd "$DATA_DIR" && git add -A && git commit -q -m "host $HOST" \
       && { git pull --rebase -q 2>/dev/null; git push -q; } ) \
-    && ok "pushed hosts/$HOST" || warn "push skipped/failed — do it manually in $(sj_pretty_path "$DATA_DIR")"
+    && sj_ok "pushed hosts/$HOST" || sj_warn "push skipped/failed — do it manually in $(sj_pretty_path "$DATA_DIR")"
 fi
 
 # ---- 8b) archive versioning (only when THIS box holds the archive) --------------------
@@ -288,52 +279,52 @@ if [ "$BACKEND" = local ] && [ -n "$LOCAL_CHATS" ]; then
   echo
   case "$ARCHIVE_FS" in
     zfs|btrfs)
-      info "Archive versioning: $LOCAL_CHATS is on $ARCHIVE_FS, so point-in-time snapshots are available."
-      info "Hourly, keeping the last 48; restore prints its commands rather than running them."
+      sj_info "Archive versioning: $LOCAL_CHATS is on $ARCHIVE_FS, so point-in-time snapshots are available."
+      sj_info "Hourly, keeping the last 48; restore prints its commands rather than running them."
       if confirm "install the snapshot timer now (needs sudo)?" N; then
         sudo "$APP/bin/sj-snapshot.sh" --schedule --path "$LOCAL_CHATS" \
-          && ok "snapshot timer installed" \
-          || warn "could not install the timer — run it yourself: sudo $APP/bin/sj-snapshot.sh --schedule --path $LOCAL_CHATS"
+          && sj_ok "snapshot timer installed" \
+          || sj_warn "could not install the timer — run it yourself: sudo $APP/bin/sj-snapshot.sh --schedule --path $LOCAL_CHATS"
       else
-        info "Skipped. Later:  sudo $APP/bin/sj-snapshot.sh --schedule --path $LOCAL_CHATS"
+        sj_info "Skipped. Later:  sudo $APP/bin/sj-snapshot.sh --schedule --path $LOCAL_CHATS"
       fi
       ;;
     *)
       # Not a failure — just the one thing people assume and shouldn't.
-      info "Archive versioning: not available here — $LOCAL_CHATS is not on zfs/btrfs, so scrubjay"
-      info "keeps NO history of the archive. Fine if you back it up separately; if you want"
-      info "point-in-time restore, put the archive on a btrfs subvolume or zfs dataset and run"
-      info "bin/sj-snapshot.sh --schedule (see docs/durability.md)."
+      sj_info "Archive versioning: not available here — $LOCAL_CHATS is not on zfs/btrfs, so scrubjay"
+      sj_info "keeps NO history of the archive. Fine if you back it up separately; if you want"
+      sj_info "point-in-time restore, put the archive on a btrfs subvolume or zfs dataset and run"
+      sj_info "bin/sj-snapshot.sh --schedule (see docs/durability.md)."
       ;;
   esac
 fi
 
 # ---- 9) what's left -------------------------------------------------------------------
-echo; ok "onboarding complete for '$HOST' (backend: $BACKEND)"
+echo; sj_ok "onboarding complete for '$HOST' (backend: $BACKEND)"
 if [ "$BACKEND" = rsync-wg ] && [ -f "$WG_KEY.pub" ]; then
   echo
-  info "Final step — authorize this machine on the receiver. Copy this host's PUBLIC key over"
-  info "(it is public — mail it, paste it, whatever), then run ON THE RECEIVER, in its scrubjay"
-  info "clone. That script writes the forced command for you and appends safely:"
+  sj_info "Final step — authorize this machine on the receiver. Copy this host's PUBLIC key over"
+  sj_info "(it is public — mail it, paste it, whatever), then run ON THE RECEIVER, in its scrubjay"
+  sj_info "clone. That script writes the forced command for you and appends safely:"
   echo
   echo "    bin/onboard-receiver.sh --authorize relay <this-host.pub>"
   echo
-  info "This host's public key ($(sj_pretty_path "$WG_KEY.pub")):"
+  sj_info "This host's public key ($(sj_pretty_path "$WG_KEY.pub")):"
   echo
   echo "    $(cat "$WG_KEY.pub")"
   echo
-  info "By hand instead — add ONE line to the receiver's ~$RECV_USER/.ssh/authorized_keys,"
-  info "replacing <APP> with its scrubjay checkout path (the wrapper widens the archive to"
-  info "group-read after each push):"
+  sj_info "By hand instead — add ONE line to the receiver's ~$RECV_USER/.ssh/authorized_keys,"
+  sj_info "replacing <APP> with its scrubjay checkout path (the wrapper widens the archive to"
+  sj_info "group-read after each push):"
   echo
   echo "    command=\"<APP>/bin/sj-receive.sh $RECV_PATH\",restrict $(cat "$WG_KEY.pub")"
   echo
-  info "Then verify from here:  ssh scrubjay-receiver true   (should succeed silently),"
-  info "and a session-end will rsync transcripts/subagents/plans to the NAS."
+  sj_info "Then verify from here:  ssh scrubjay-receiver true   (should succeed silently),"
+  sj_info "and a session-end will rsync transcripts/subagents/plans to the NAS."
   # Until that line is pasted, this host relays nothing. Record the wait so SessionStart can say
   # so — and can notice by itself once the key lands, instead of the user having to remember.
   sj_record_pending relay ssh "$WG_TARGET"
-  info "(Recorded as pending — a future session will notice once the key is authorized.)"
+  sj_info "(Recorded as pending — a future session will notice once the key is authorized.)"
 fi
 
 # ---- 10) prove it ---------------------------------------------------------------------
@@ -345,10 +336,10 @@ fi
 # authorized at this point, so a red line here is expected and self-resolving (see step 9). Report
 # it, don't exit non-zero on it.
 echo
-info "Verifying this machine end to end (bin/sj-doctor.sh)…"
+sj_info "Verifying this machine end to end (bin/sj-doctor.sh)…"
 "$APP/bin/sj-doctor.sh" || {
   echo
-  info "Some checks failed — see the fix hints above. If this host is still waiting on the"
-  info "receiver's authorized_keys, that is expected: a session will pick it up automatically"
-  info "once the line is pasted. Re-check any time with /sjdoctor."
+  sj_info "Some checks failed — see the fix hints above. If this host is still waiting on the"
+  sj_info "receiver's authorized_keys, that is expected: a session will pick it up automatically"
+  sj_info "once the line is pasted. Re-check any time with /sjdoctor."
 }
