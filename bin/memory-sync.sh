@@ -7,7 +7,9 @@
 # Claude's per-project memory dirs are symlinked into this clone by claude-sync.sh, so a
 # pull brings other machines' memories in and a push publishes this machine's.
 #   usage: memory-sync.sh [pull|push]   (default: pull)
-# Best-effort: clones on first use, never blocks a session, always exits 0.
+# Best-effort: clones on first use, never blocks a session, and exits 0 for anything that is the
+# remote's or the network's fault (the outcome goes into the breadcrumb instead — see
+# sj_record_memory_sync). A usage error is the one exception: it exits non-zero.
 #
 # Config (~/.config/scrubjay/config):
 #   SCRUBJAY_MEMORY         local clone (default ~/.scrubjay/scrubjay-memory)
@@ -42,9 +44,11 @@ if [ ! -d "$mem/.git" ]; then
     git -C "$mem" remote add origin "$remote" 2>/dev/null || true
   }
 fi
-[ -d "$mem/.git" ] || exit 0
+# No usable clone means this machine syncs nothing, every session, forever — the same invisible
+# island the breadcrumb exists to expose. Record it rather than exiting 0 with no trace.
+[ -d "$mem/.git" ] || { sj_record_memory_sync fail "$mode" "$remote" "no-local-clone at $mem"; exit 0; }
 
-cd "$mem" || exit 0
+cd "$mem" || { sj_record_memory_sync fail "$mode" "$remote" "cannot-enter $mem"; exit 0; }
 git config pull.rebase true 2>/dev/null || true
 
 # Keep origin honest. Everything below talks to `origin`, but origin's URL was frozen at clone
@@ -93,7 +97,10 @@ case "$mode" in
       # report green every session while its pull had been failing for weeks.
       if [ "$ahead" = 0 ]; then track; sj_record_memory_sync skip push "$remote" "nothing-to-publish"; exit 0; fi
     else
-      git commit -q -m "memory sync: $(sj_host) $(date '+%F %H:%M')" 2>/dev/null || exit 0
+      # A commit that won't happen (no identity configured, unwritable index) strands staged
+      # memory locally forever, which is exactly the state the breadcrumb is for.
+      git commit -q -m "memory sync: $(sj_host) $(date '+%F %H:%M')" 2>/dev/null || {
+        sj_record_memory_sync fail push "$remote" "commit-failed"; exit 0; }
     fi
     if ! sj_timeout 30 git push -q origin "$branch" 2>/dev/null; then
       # remote moved on (another machine pushed): tree is clean after commit, so rebase onto it + retry.
@@ -113,7 +120,9 @@ case "$mode" in
     fi
     track
     ;;
-  *) echo "memory-sync.sh: unknown mode '$mode' (use pull|push)" >&2; exit 0 ;;
+  # A bad mode is a caller bug, not a degraded remote: nothing was attempted, so "always exits 0"
+  # does not apply. Both hook callers pass a literal pull/push and discard the status anyway.
+  *) echo "memory-sync.sh: unknown mode '$mode' (use pull|push)" >&2; exit 2 ;;
 esac
 
 exit 0

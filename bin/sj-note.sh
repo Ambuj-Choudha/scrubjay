@@ -117,8 +117,19 @@ printf '\033[1;32m✓\033[0m note written: %s\n' "$(sj_pretty_path "$target")"
 if [ "$push" = 1 ]; then
   remote="$(sj_memory_remote)"
   if [ -n "$remote" ]; then
+    # memory-sync.sh always exits 0 by design, so its status says nothing — but it does record
+    # what actually happened. Read that instead of printing "published" unconditionally: a note
+    # that is only committed locally and a note that is on the NAS are different facts, and the
+    # whole promise of --push is the second one.
     bash "$APP/bin/memory-sync.sh" push >/dev/null 2>&1
-    printf '  published to %s\n' "$remote"
+    crumb="$(grep '^mode=push ' "$(sj_memory_status_file)" 2>/dev/null | tail -1)" || crumb=""
+    case "$crumb" in
+      *result=ok*)   printf '  published to %s\n' "$remote" ;;
+      *result=fail*) printf '\033[1;33m!\033[0m  NOT published to %s — the note is committed locally and will go out on the next successful sync. Resolve with: %s\n' \
+                       "$remote" "bash $APP/bin/memory-sync.sh push" ;;
+      *)             printf '  committed locally; publication to %s is unconfirmed (see %s)\n' \
+                       "$remote" "$(sj_pretty_path "$(sj_memory_status_file)")" ;;
+    esac
   else
     printf '  (memory sync is off on this host — the note is local until /sjmemory is run)\n'
   fi

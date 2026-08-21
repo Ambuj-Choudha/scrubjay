@@ -717,9 +717,16 @@ def _search_paths(r: Roots, type=None) -> list[Path]:
     return paths
 
 
-def _grep(query: str, paths: list[Path], globs=("*.md",), max_count_per_file=3
-          ) -> list[tuple[str, int, str]]:
+def _grep(query: str, paths: list[Path], globs=("*.md",), max_count_per_file=3,
+          problems: list[str] | None = None) -> list[tuple[str, int, str]]:
     """Return (file, lineno, line) hits. Case-insensitive, fixed-string, restricted to `globs`.
+
+    A search that could not run returns no hits, which is indistinguishable from an archive that
+    genuinely holds nothing about the query — and "no results" is exactly the answer a caller acts
+    on by concluding the session was never archived. So anything that stops the search from being
+    complete is appended to `problems`; core_recall reports them to the model alongside the hits.
+    The empty return stays: a broken search must degrade, not raise, or recall dies on one
+    unreadable directory.
 
     `-a` (treat every file as text) is load-bearing, not a micro-optimisation. A transcript can
     carry a stray NUL byte from captured terminal output — /proc/device-tree/* strings are
@@ -744,10 +751,24 @@ def _grep(query: str, paths: list[Path], globs=("*.md",), max_count_per_file=3
         gargs = [f"--include={g}" for g in globs]
         cmd = ["grep", "-r", "-i", "-F", "-a", "-n", *gargs, "-m", str(max_count_per_file),
                "--", query, *map(str, paths)]
+    def note(msg: str) -> None:
+        if problems is not None and msg not in problems:
+            problems.append(msg)
+
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
+        note(f"the {cmd[0]} prefilter timed out after 30s — results are incomplete")
         return []
+    except OSError as e:
+        note(f"could not run the {cmd[0]} prefilter ({e}) — the archive was NOT searched")
+        return []
+    # 0 = matched, 1 = no match; anything else is the search tool reporting a real problem
+    # (unreadable directory, bad invocation) with however many hits it managed on stdout.
+    if out.returncode > 1:
+        detail = (out.stderr or "").strip().splitlines()
+        note(f"the {cmd[0]} prefilter exited {out.returncode} — results may be incomplete"
+             + (f": {detail[0][:200]}" if detail else ""))
     for line in out.stdout.splitlines():
         # path:lineno:text
         parts = line.split(":", 2)
@@ -838,10 +859,11 @@ def core_recall(query, host=None, project=None, since=None, k=8, r=None):
     # is one hit that knows it matched several — that is what the passage score reads. This is the
     # lexical *prefilter*; the calling model still does the semantic ranking.
     per_file: dict[str, dict] = {}
+    problems: list[str] = []       # anything that made the prefilter less than complete
     for term in terms:
         # 8 rather than 3 per term: the extra lines are the evidence _passage_terms scores on, and
         # they are discarded again by _pick_snippets, so nothing extra reaches the caller.
-        for path, lineno, text in _grep(term, paths, max_count_per_file=8):
+        for path, lineno, text in _grep(term, paths, max_count_per_file=8, problems=problems):
             f = per_file.setdefault(path, {"terms": set(), "hits": {}, "n": 0, "log": None,
                                            "log_hits": []})
             f["terms"].add(term.lower())
@@ -860,7 +882,8 @@ def core_recall(query, host=None, project=None, since=None, k=8, r=None):
     if logs_dir:
         readable_by_sid = {a.sid: a.path for a in arts if a.type == "transcript" and a.sid}
         for term in terms:
-            for _lf, _lineno, text in _grep(term, [logs_dir], globs=("*.log",), max_count_per_file=80):
+            for _lf, _lineno, text in _grep(term, [logs_dir], globs=("*.log",),
+                                            max_count_per_file=80, problems=problems):
                 e = _parse_log_line(text)
                 # A topic-less row is listable (sj_list shows it — it is a real session) but not
                 # recallable: recall ranks on prose, and this row has none. _parse_log_line no
@@ -919,7 +942,16 @@ def core_recall(query, host=None, project=None, since=None, k=8, r=None):
            "just that passage instead of the whole file. `score`/`why` are lexical only — term " \
            "coverage, co-occurrence in one passage, catalogue hits — so treat them as a shortlist, " \
            "not a verdict. type=log hits have no transcript here: their host/cwd/date say where."
-    return {"query": query, "engine": note, "count": len(results), "results": results}
+    out = {"query": query, "engine": note, "count": len(results), "results": results}
+    if problems:
+        # Zero hits from a search that never ran means "unknown", not "nothing archived", and the
+        # model has no other way to tell the two apart. Say so in the payload, and on stderr so it
+        # also reaches the host's MCP log.
+        for p in problems:
+            print(f"sjmcp: recall degraded: {p}", file=sys.stderr)
+        out["warnings"] = problems
+        out["partial"] = True
+    return out
 
 
 # ── core: search within ────────────────────────────────────────────────────────────────────

@@ -63,6 +63,40 @@ SCRUBJAY_HARNESS=claude bash -c 'printf "%s" "$1" | bash "$0/hooks/log-session.s
   "$APP" "$(payload "$sid5")"
 assert_eq "no row for an empty transcript" "0" "$(grep -c "session=$sid5" "$LOG")"
 
+# ── the row leaving the machine ────────────────────────────────────────────────────────────────
+# A row that never reaches the data repo is a row no other machine can read, and sj_data_push is
+# silent by contract (SessionEnd must not fail because a NAS is down) — so the outcome has to leave
+# by breadcrumb, the same way the transcript relay and memory sync already do.
+section "a data-repo sync that did not publish leaves a breadcrumb"
+git config --global user.email "test@scrubjay.invalid"
+git config --global user.name  "scrubjay tests"
+. "$APP/bin/lib.sh"
+dcrumb="$HOME/.config/scrubjay/last-data-push"
+
+BARE="$SANDBOX/data.git"; git init -q --bare -b main "$BARE"
+git init -q -b main "$SCRUBJAY_DATA"
+git -C "$SCRUBJAY_DATA" remote add origin "$BARE"
+git -C "$SCRUBJAY_DATA" add -A; git -C "$SCRUBJAY_DATA" commit -q -m seed
+git -C "$SCRUBJAY_DATA" push -q -u origin main
+
+echo "a change worth publishing" >> "$SCRUBJAY_DATA/logs/testhost.log"
+( SCRUBJAY_LOG_NOGIT=0 sj_data_push "test: publishable change" )
+assert_contains "a successful push records ok" "$(cat "$dcrumb" 2>/dev/null)" "result=ok"
+
+rm -rf "$BARE"                                  # the NAS goes away mid-week
+echo "a change that cannot be published" >> "$SCRUBJAY_DATA/logs/testhost.log"
+( SCRUBJAY_LOG_NOGIT=0 sj_data_push "test: unpublishable change" )
+crumb_txt="$(cat "$dcrumb" 2>/dev/null)"
+assert_contains "an unreachable remote records fail" "$crumb_txt" "result=fail"
+assert_contains "and says the commit is local-only" "$crumb_txt" "committed-not-pushed"
+# The point of the breadcrumb is that the NEXT session says so out loud.
+out="$(printf '{"session_id":"probe"}' | bash "$APP/hooks/sync-session.sh" 2>/dev/null)"
+assert_contains "SessionStart surfaces the failed data sync" "$out" "data-repo sync FAILED"
+
+# Whatever the outcome, SessionEnd's caller must never see a failure from this.
+check "the caller is still never failed" bash -c \
+  '. "$APP/bin/lib.sh"; SCRUBJAY_LOG_NOGIT=0 sj_data_push "test: still exits 0"'
+
 section "write-once: re-ending the same session adds no second line"
 n_before="$(grep -c "session=$sid" "$LOG")"
 SCRUBJAY_HARNESS=claude bash -c 'printf "%s" "$1" | bash "$0/hooks/log-session.sh" --detached' \

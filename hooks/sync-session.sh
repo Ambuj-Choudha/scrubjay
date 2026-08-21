@@ -85,6 +85,10 @@ fi
 sfile="$(sj_ship_status_file 2>/dev/null || echo "$HOME/.config/scrubjay/last-ship")"
 if [ -s "$sfile" ] && grep -q '^result=fail' "$sfile" 2>/dev/null; then
   printf 'scrubjay: the last transcript relay from this machine FAILED — recent sessions may not have reached the archive. Check the relay SSH key / authorized_keys on the receiver, then re-ship. Breadcrumb: %s\n' "$(cat "$sfile")"
+elif [ -s "$sfile" ] && grep -q '^result=partial' "$sfile" 2>/dev/null; then
+  # The transcript landed but some of the session's other records didn't. Less urgent than a dead
+  # relay, still not something to hide: the archive is incomplete for that session.
+  printf 'scrubjay: the last transcript relay was INCOMPLETE — the transcript reached the archive but some of that session'"'"'s records (plans, subagent transcripts, or the readable rendering) did not. Breadcrumb: %s\n' "$(cat "$sfile")"
 fi
 
 # 3a) finish onboarding if the receiver has been authorized since last time. A p2p host cannot
@@ -122,6 +126,16 @@ fi
 mfile="$(sj_memory_status_file 2>/dev/null || echo "$HOME/.config/scrubjay/last-memory-sync")"
 if [ -s "$mfile" ] && grep -q 'result=fail' "$mfile" 2>/dev/null; then
   printf 'scrubjay: cross-machine memory sync FAILED — this machine may be running on a stale view of memory, and anything it writes may not reach the others. Check SCRUBJAY_MEMORY_REMOTE and the memory-git SSH key. Breadcrumb: %s\n' "$(cat "$mfile")"
+fi
+
+# 3c) and for the data repo. sj_data_push is silent by contract (it must never fail the session-end
+#     hook), which meant a wedged or unpushable data repo published no catalogue rows at all while
+#     every session looked clean — the failure mode that made this breadcrumb necessary. Clears
+#     itself on the next successful push.
+dfile="$(sj_data_status_file 2>/dev/null || echo "$HOME/.config/scrubjay/last-data-push")"
+if [ -s "$dfile" ] && grep -q '^result=fail' "$dfile" 2>/dev/null; then
+  printf 'scrubjay: the last data-repo sync FAILED — this machine'"'"'s catalogue rows and config edits are committed locally but NOT published, so other machines cannot see its sessions. Inspect with: git -C %s status. Breadcrumb: %s\n' \
+    "$(sj_data 2>/dev/null || echo '<SCRUBJAY_DATA>')" "$(cat "$dfile")"
 fi
 
 exit 0

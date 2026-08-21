@@ -46,4 +46,37 @@ SCRUBJAY_HARNESS=claude bash "$APP/bin/ship-transcript.sh" \
 after="$(find "$ARCHIVE" -type f | sort)"
 assert_eq "re-shipping adds no new files" "$before" "$after"
 
+# ── what the caller is told when a ship does NOT work ─────────────────────────────────────────
+# The hooks discard this script's status (they must never block a session), so its two channels are
+# the exit code — for the direct callers, backfill and reconcile — and the last-ship breadcrumb that
+# hooks/sync-session.sh reads back at the next SessionStart. Both used to say "fine" regardless.
+section "a ship that could not happen is not reported as a success"
+crumb="$HOME/.config/scrubjay/last-ship"
+assert_contains "the good ship above recorded result=ok" "$(cat "$crumb" 2>/dev/null)" "result=ok"
+
+check_fails "an unknown backend exits non-zero" \
+  env SCRUBJAY_TRANSCRIPT_BACKEND=nosuchbackend SCRUBJAY_HARNESS=claude \
+  bash "$APP/bin/ship-transcript.sh" "$FIXTURES/claude-session.jsonl" "$slug" "$sid" testhost
+check_fails "an unknown harness exits non-zero" \
+  env SCRUBJAY_HARNESS=nosuchharness \
+  bash "$APP/bin/ship-transcript.sh" "$FIXTURES/claude-session.jsonl" "$slug" "$sid" testhost
+
+section "the transcript landing without the session's other records is recorded as partial"
+# Make the readable rendering unshippable while the transcript's own directory stays writable: the
+# transcript still reaches the archive, the rendering cannot, and that is precisely the case that
+# used to record a clean result=ok.
+psid="99999999-2222-4333-8444-555555555555"        # a session with no rendering in place yet
+chmod 500 "$ARCHIVE/testhost/readable/widget-api"
+SCRUBJAY_HARNESS=claude bash "$APP/bin/ship-transcript.sh" \
+  "$FIXTURES/claude-session.jsonl" "$slug" "$psid" testhost /home/user/widget-api >/dev/null 2>&1
+ship_rc=$?
+chmod 700 "$ARCHIVE/testhost/readable/widget-api"
+if [ "$(id -u)" = 0 ]; then
+  skip "an incomplete ship records result=partial" "running as root ignores the mode bits"
+else
+  assert_contains "an incomplete ship records result=partial" "$(cat "$crumb" 2>/dev/null)" "result=partial"
+  # The transcript itself did land, so reconcile must still count the session as recovered.
+  assert_eq "but the exit status still tracks the transcript only" "0" "$ship_rc"
+fi
+
 finish
