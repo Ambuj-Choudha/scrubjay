@@ -24,4 +24,4 @@ git -C "$CHATS_REPO" pull --ff-only -q
 rsync -a --delete --exclude='.git' --exclude='README.md' --exclude='.gitignore' \
       --exclude='memory.git' --exclude='memory' \
       "$CHATS_REPO"/ "$NAS_DIR"/
-echo "$(date '+%F %T') mirrored $(find "$NAS_DIR" -name '*.jsonl' | wc -l) transcripts -> $NAS_DIR"
+echo "$(date '+%F %T') mirrored $(find "$NAS_DIR" -name '*.jsonl' | wc -l | tr -d ' ') transcripts -> $NAS_DIR"
