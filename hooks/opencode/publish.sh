@@ -36,6 +36,8 @@ fi
 shift   # drop --detached
 
 sid="${1:?session id}"; cwd="${2:-$PWD}"
+# The sid becomes a filename below — refuse anything that could leave the export dir.
+case "$sid" in *[!A-Za-z0-9._-]*) exit 0 ;; esac
 [ "${SCRUBJAY_NOSHIP:-0}" = "1" ] && exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -46,8 +48,18 @@ APP="$(cd -P "$(dirname "$self")/../.." 2>/dev/null && pwd)" || exit 0
 OC="${SCRUBJAY_OPENCODE_BIN:-opencode}"
 command -v "$OC" >/dev/null 2>&1 || exit 0
 
-dir="${TMPDIR:-/tmp}/scrubjay-opencode"
+# Per-user and mode 700: exports are full transcripts, and a world-shared dir would let another
+# local user read them or plant a symlink for the export to follow. The symlink test comes first
+# (mkdir -p succeeds through one, and chmod/-O follow it), and the chmod only runs on a dir
+# proven to be ours.
+dir="${TMPDIR:-/tmp}/scrubjay-opencode.$(id -u)"
+[ -L "$dir" ] && exit 0
 mkdir -p "$dir" 2>/dev/null || exit 0
+[ -O "$dir" ] || exit 0
+chmod 700 "$dir" 2>/dev/null
+# Exports from before the per-uid move sit world-readable in the old shared dir — remove ours.
+old="${TMPDIR:-/tmp}/scrubjay-opencode"
+[ -d "$old" ] && [ ! -L "$old" ] && [ -O "$old" ] && rm -rf "$old"
 # The basename IS the session id — hooks/publish-now.sh reads it back off the path.
 out="$dir/$sid.json"
 
