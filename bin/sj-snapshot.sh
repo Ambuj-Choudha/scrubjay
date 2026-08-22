@@ -47,15 +47,17 @@ sjs_prune_list() {  # sjs_prune_list <keep>   (names on stdin)
   grep -E '(^|[@/])scrubjay-[0-9]' | sort -r | awk -v k="$keep" 'NR>k'
 }
 
-# systemd units for scheduled snapshots (generated, not hand-installed).
+# systemd units for scheduled snapshots (generated, not hand-installed). ExecStart values are
+# quoted and '%' doubled: systemd word-splits the line and expands bare '%' as a specifier.
 sjs_service_text() {  # sjs_service_text <self> <path> <keep>
+  local self="${1//%/%%}" path="${2//%/%%}"
   cat <<UNIT
 [Unit]
 Description=scrubjay archive snapshot ($2)
 
 [Service]
 Type=oneshot
-ExecStart=$1 --path $2 --keep $3 --now
+ExecStart="$self" --path "$path" --keep $3 --now
 UNIT
 }
 sjs_timer_text() {  # sjs_timer_text <oncalendar>
@@ -98,8 +100,9 @@ done
 [ -n "$ACTION" ] || die "nothing to do — pass --now, --schedule, --list or --restore (see --help)."
 
 # Runs its arguments as a plain argv — no shell re-parse, so a path with spaces or shell
-# metacharacters stays a single argument and cannot inject commands into a root shell.
-run() { if [ "$DRY" = 1 ]; then printf '  + %s\n' "$*" >&2; else "$@"; fi; }
+# metacharacters stays a single argument and cannot inject commands into a root shell. The
+# dry-run preview quotes with %q so what it prints is what would run.
+run() { if [ "$DRY" = 1 ]; then { printf '  +'; printf ' %q' "$@"; printf '\n'; } >&2; else "$@"; fi; }
 
 FS="$(sjs_detect_fs "$PATH_STORAGE")"
 if [ "$FS" = none ]; then
@@ -138,8 +141,8 @@ case "$ACTION" in
     svc=/etc/systemd/system/scrubjay-snapshot.service
     tmr=/etc/systemd/system/scrubjay-snapshot.timer
     if [ "$DRY" = 1 ]; then
-      printf '  + write %s\n' "$svc" >&2
-      printf '  + write %s\n' "$tmr" >&2
+      { printf '  + write %s:\n' "$svc"; sjs_service_text "$SELF" "$PATH_STORAGE" "$KEEP"
+        printf '  + write %s:\n' "$tmr"; sjs_timer_text "$ONCAL"; } >&2
     else
       sjs_service_text "$SELF" "$PATH_STORAGE" "$KEEP" > "$svc"
       sjs_timer_text "$ONCAL" > "$tmr"

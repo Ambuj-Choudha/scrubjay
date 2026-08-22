@@ -43,7 +43,9 @@ assert_eq "keep >= count prunes nothing" "" \
 
 section "generated systemd units reference this script + path"
 svc="$(sjs_service_text /opt/sj/bin/sj-snapshot.sh /mnt/nas1/scrubjay-storage 48)"
-assert_contains "service ExecStart runs --now" "$svc" "sj-snapshot.sh --path /mnt/nas1/scrubjay-storage --keep 48 --now"
+assert_contains "service ExecStart runs --now" "$svc" 'ExecStart="/opt/sj/bin/sj-snapshot.sh" --path "/mnt/nas1/scrubjay-storage" --keep 48 --now'
+assert_contains "percent in path is escaped for systemd" \
+  "$(sjs_service_text /opt/sj/bin/sj-snapshot.sh "/mnt/100% full" 48)" '--path "/mnt/100%% full"'
 assert_contains "timer installs to timers.target" "$(sjs_timer_text hourly)" "WantedBy=timers.target"
 
 section "--now --dry-run prints the real command but touches nothing"
