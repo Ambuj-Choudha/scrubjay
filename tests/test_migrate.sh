@@ -51,6 +51,7 @@ assert_eq "chats remote repointed at the renamed repo" \
   "git@example.invalid:user/scrubjay-chats.git" \
   "$(git -C "$NEWD/scrubjay-chats" remote get-url origin)"
 check "storage dir renamed (parent is writable here)" test -d "$STORE_PARENT/scrubjay-storage"
+assert_contains "config points at the renamed storage" "$cfg" "$STORE_PARENT/scrubjay-storage"
 assert_no_file "the old storage name is gone" "$OLDSTORE"
 
 section "a second --apply is a no-op, not a failure"

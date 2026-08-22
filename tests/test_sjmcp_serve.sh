@@ -34,9 +34,12 @@ check_fails "an id longer than a UUID is refused" \
 
 section "fetch: an archive entry streams out as tar"
 listing="$(serve "fetch testhost/-home-user-widget-api/$sid.jsonl" | tar -tf -)"
-assert_contains "the tar holds exactly the asked-for file" "$listing" "$sid.jsonl"
-dirlist="$(serve "fetch testhost/-home-user-widget-api" | tar -tf -)"
-assert_contains "a directory fetch streams its contents" "$dirlist" "$sid.jsonl"
+assert_eq "the tar holds exactly the asked-for file" \
+  "testhost/-home-user-widget-api/$sid.jsonl" "$listing"
+dirlist="$(serve "fetch testhost/-home-user-widget-api" | tar -tf - | sort)"
+assert_eq "a directory fetch streams its contents and nothing else" \
+  "testhost/-home-user-widget-api/
+testhost/-home-user-widget-api/$sid.jsonl" "$dirlist"
 
 section "fetch: nothing outside the archive root can be reached"
 check_fails "an absolute path is refused" serve "fetch /etc/passwd"
